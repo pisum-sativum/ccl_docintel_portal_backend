@@ -21,8 +21,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
+# Pre-download the sentence-transformer model so it caches in the Docker image
+# This prevents the initial download delay that causes Render port scan timeouts
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Expose port 8000 for local development (Render ignores this)
 EXPOSE 8000
 
 # Run the FastAPI application using dynamic port from the environment
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Shell form naturally evaluates the PORT variable
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
