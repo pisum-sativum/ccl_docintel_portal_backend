@@ -9,7 +9,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── 1. Initialize Engines ─────────────────────────────────────────────────────
-embedding_engine = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+_embedding_engine = None
+_vector_db = None
+
+def get_embedding_engine():
+    global _embedding_engine
+    if _embedding_engine is None:
+        from langchain_community.embeddings import SentenceTransformerEmbeddings
+        _embedding_engine = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+    return _embedding_engine
+
+def get_vector_db():
+    global _vector_db
+    if _vector_db is None:
+        from langchain_community.vectorstores import Chroma
+        _vector_db = Chroma(
+            persist_directory="./chroma_db",
+            embedding_function=get_embedding_engine()
+        )
+    return _vector_db
+
+def warm_up():
+    get_vector_db()
 
 # Smaller chunks → tighter focus per chunk, better table/number retrieval
 text_splitter = RecursiveCharacterTextSplitter(
@@ -17,12 +38,6 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=100,
     separators=["\n\n", "\n", ".", " "],
     length_function=len
-)
-
-CHROMA_DIR = "./chroma_db"
-vector_db = Chroma(
-    persist_directory=CHROMA_DIR,
-    embedding_function=embedding_engine
 )
 
 # gemini-2.5-flash-lite
@@ -45,9 +60,9 @@ def inject_text_into_vector_store(raw_text: str, filename: str, access_level: st
     try:
         # ── Delete old chunks for this file before re-indexing ────────────
         try:
-            existing = vector_db._collection.get(where={"source": filename})
+            existing = get_vector_db()._collection.get(where={"source": filename})
             if existing and existing.get("ids"):
-                vector_db._collection.delete(ids=existing["ids"])
+                get_vector_db()._collection.delete(ids=existing["ids"])
                 print(f"🗑️  [DEDUP] Removed {len(existing['ids'])} stale chunks for '{filename}'")
         except Exception as del_err:
             print(f"⚠️  [DEDUP WARN] Could not remove old chunks: {del_err}")
@@ -55,7 +70,7 @@ def inject_text_into_vector_store(raw_text: str, filename: str, access_level: st
         # ── Split and re-index ────────────────────────────────────────────
         chunks = text_splitter.split_text(raw_text)
         metadata_tags = [{"source": filename, "access_level": access_level} for _ in chunks]
-        vector_db.add_texts(texts=chunks, metadatas=metadata_tags)
+        get_vector_db().add_texts(texts=chunks, metadatas=metadata_tags)
         print(f"📦 [VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")
         return True
     except Exception as e:
@@ -99,7 +114,7 @@ def _get_all_chunks_from_db(filter_criteria=None) -> list:
         kwargs = {"include": ["documents", "metadatas"]}
         if filter_criteria:
             kwargs["where"] = filter_criteria
-        result = vector_db._collection.get(**kwargs)
+        result = get_vector_db()._collection.get(**kwargs)
         docs  = result.get("documents", [])
         metas = result.get("metadatas", []) or [{}] * len(docs)
 
@@ -122,7 +137,7 @@ def _keyword_scan_all(query: str, top_n: int = 6, filter_criteria=None) -> list:
     """
     # ── Scale guard: skip full scan for very large DBs ────────────────────
     try:
-        total_chunks = vector_db._collection.count()
+        total_chunks = get_vector_db()._collection.count()
         if total_chunks > 3000:
             print(f"⚡ [SCALE GUARD] {total_chunks} chunks — skipping full keyword scan")
             return []
@@ -168,7 +183,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
             search_filter = {"access_level": {"$in": ["Public", "Internal"]}}
 
         # ── Step A: Semantic search ───────────────────────────────────────
-        semantic_docs = vector_db.similarity_search(user_question, k=8, filter=search_filter)
+        semantic_docs = get_vector_db().similarity_search(user_question, k=8, filter=search_filter)
 
         # ── Step B: Full keyword scan (always runs, scale-guarded) ────────
         keyword_docs = _keyword_scan_all(user_question, top_n=6, filter_criteria=search_filter)

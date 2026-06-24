@@ -1,7 +1,13 @@
+import time
+_boot_start = time.time()
+print(f"[BOOT] main.py import started at {_boot_start}")
+
 import os
 import hashlib
 import re
 import threading
+from contextlib import asynccontextmanager
+
 from rag_engine import inject_text_into_vector_store, query_document_intelligence, scan_text_for_compliance_risks
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
 from fastapi.responses import FileResponse
@@ -19,10 +25,17 @@ from auth import (
     get_current_user, require_admin
 )
 
-app = FastAPI(title="CCL DocIntel API Engine")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import asyncio
+    from rag_engine import warm_up
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, init_db)
+    await loop.run_in_executor(None, warm_up)
+    yield
 
-# 1. Initialize Relational Database Tables on Server Boot
-init_db()
+app = FastAPI(title="CCL DocIntel API Engine", lifespan=lifespan)
+print(f"[BOOT] FastAPI ready in {time.time() - _boot_start:.2f}s")
 
 # 2. Configure Cross-Origin Resource Sharing (CORS)
 app.add_middleware(
@@ -401,7 +414,8 @@ def delete_document(
 
     # 1. Remove from vector store
     try:
-        from rag_engine import vector_db
+        from rag_engine import get_vector_db
+        vector_db = get_vector_db()
         existing = vector_db._collection.get(where={"source": doc.filename})
         if existing and existing.get("ids"):
             vector_db._collection.delete(ids=existing["ids"])

@@ -30,4 +30,4 @@ EXPOSE 8000
 
 # Run the FastAPI application using dynamic port from the environment
 # Shell form naturally evaluates the PORT variable
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 75
