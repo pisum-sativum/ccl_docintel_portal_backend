@@ -30,8 +30,8 @@ async def lifespan(app: FastAPI):
     import asyncio
     from rag_engine import warm_up
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, init_db)
-    # Removing warm_up from lifespan to prevent Render port binding timeout
+    # Removed init_db and warm_up from lifespan to prevent Render port binding timeout
+    # Tables should be created via migrate.py or a pre-deploy command.
     yield
 
 app = FastAPI(title="CCL DocIntel API Engine", lifespan=lifespan)

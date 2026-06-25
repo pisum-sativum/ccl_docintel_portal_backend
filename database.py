@@ -13,10 +13,10 @@ if not DATABASE_URL:
     print("WARNING: DATABASE_URL is not set. Using temporary sqlite database.")
     DATABASE_URL = "sqlite:///./sql_app.db"
 # Connect to cloud PostgreSQL server (Neon)
-# connect_args disables SSL cert verification – safe for Neon's managed TLS
+connect_args = {"sslmode": "require"} if DATABASE_URL.startswith("postgres") else {"check_same_thread": False}
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"sslmode": "require"},
+    connect_args=connect_args,
     pool_pre_ping=True,   # detect stale connections automatically
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

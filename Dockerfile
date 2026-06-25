@@ -25,9 +25,12 @@ COPY . .
 # This prevents the initial download delay that causes Render port scan timeouts
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
+# Ensure Python logs are not buffered so they appear immediately in Render logs
+ENV PYTHONUNBUFFERED=1
+
 # Expose port 8000 for local development (Render ignores this)
 EXPOSE 8000
 
 # Run the FastAPI application using dynamic port from the environment
-# Shell form naturally evaluates the PORT variable
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 75
+# We echo the port first to guarantee we see it in the logs
+CMD echo "Starting Uvicorn on PORT: ${PORT:-8000}" && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 75
