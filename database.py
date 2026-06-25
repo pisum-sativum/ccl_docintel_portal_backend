@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-
+if not DATABASE_URL:
+    print("WARNING: DATABASE_URL is not set. Using temporary sqlite database.")
+    DATABASE_URL = "sqlite:///./sql_app.db"
 # Connect to cloud PostgreSQL server (Neon)
 # connect_args disables SSL cert verification – safe for Neon's managed TLS
 engine = create_engine(
