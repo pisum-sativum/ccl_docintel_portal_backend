@@ -1,9 +1,8 @@
+# ── Lightweight stdlib-only imports at module level ──────────────────────────
+# ALL heavy langchain/sentence-transformer imports are deferred to the first
+# time they are actually needed.  This lets Uvicorn bind its port in < 1 s.
 import os
 import re
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,6 +11,7 @@ load_dotenv()
 _embedding_engine = None
 _vector_db = None
 _llm = None
+_text_splitter = None
 
 def get_embedding_engine():
     global _embedding_engine
@@ -31,10 +31,11 @@ def get_vector_db():
     return _vector_db
 
 def get_llm():
-    """Lazy-initialize the LLM so it does NOT run at import/module-load time.
+    """Lazy-initialize the LLM — import AND instantiate only on first call.
     This prevents blocking Uvicorn port binding on Render."""
     global _llm
     if _llm is None:
+        from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash-lite",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
@@ -42,16 +43,21 @@ def get_llm():
         )
     return _llm
 
+def get_text_splitter():
+    """Lazy-initialize the text splitter to avoid importing langchain at module load."""
+    global _text_splitter
+    if _text_splitter is None:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        _text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", ".", " "],
+            length_function=len
+        )
+    return _text_splitter
+
 def warm_up():
     get_vector_db()
-
-# Smaller chunks → tighter focus per chunk, better table/number retrieval
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100,
-    separators=["\n\n", "\n", ".", " "],
-    length_function=len
-)
 
 
 # ── 2. Data Ingestion ─────────────────────────────────────────────────────────
@@ -74,7 +80,7 @@ def inject_text_into_vector_store(raw_text: str, filename: str, access_level: st
             print(f"⚠️  [DEDUP WARN] Could not remove old chunks: {del_err}")
 
         # ── Split and re-index ────────────────────────────────────────────
-        chunks = text_splitter.split_text(raw_text)
+        chunks = get_text_splitter().split_text(raw_text)
         metadata_tags = [{"source": filename, "access_level": access_level} for _ in chunks]
         get_vector_db().add_texts(texts=chunks, metadatas=metadata_tags)
         print(f"📦 [VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")

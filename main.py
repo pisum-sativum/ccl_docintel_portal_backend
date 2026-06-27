@@ -8,7 +8,6 @@ import re
 import threading
 from contextlib import asynccontextmanager
 
-from rag_engine import inject_text_into_vector_store, query_document_intelligence, scan_text_for_compliance_risks
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
