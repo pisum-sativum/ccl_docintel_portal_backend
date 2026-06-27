@@ -21,10 +21,9 @@ except ImportError:
 try:
     import pytesseract
     from PIL import Image as PilImage
-    # Tesseract 5.5.0 is installed per-user; point to its exact location
-    pytesseract.pytesseract.tesseract_cmd = (
-        r"C:\Users\KIIT0001\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-    )
+    import sys
+    if sys.platform == "win32":
+        pytesseract.pytesseract.tesseract_cmd = r"C:\Users\KIIT0001\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
     _OCR_AVAILABLE = True
 except ImportError:
     _OCR_AVAILABLE = False
