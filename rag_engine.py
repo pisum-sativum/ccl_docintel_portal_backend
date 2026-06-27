@@ -11,6 +11,7 @@ load_dotenv()
 # ── 1. Initialize Engines ─────────────────────────────────────────────────────
 _embedding_engine = None
 _vector_db = None
+_llm = None
 
 def get_embedding_engine():
     global _embedding_engine
@@ -29,6 +30,18 @@ def get_vector_db():
         )
     return _vector_db
 
+def get_llm():
+    """Lazy-initialize the LLM so it does NOT run at import/module-load time.
+    This prevents blocking Uvicorn port binding on Render."""
+    global _llm
+    if _llm is None:
+        _llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash-lite",
+            google_api_key=os.getenv("GEMINI_API_KEY", ""),
+            temperature=0.2,
+        )
+    return _llm
+
 def warm_up():
     get_vector_db()
 
@@ -38,13 +51,6 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=100,
     separators=["\n\n", "\n", ".", " "],
     length_function=len
-)
-
-# gemini-2.5-flash-lite
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
-    google_api_key=os.getenv("GEMINI_API_KEY", "dummy_key_to_prevent_startup_crash"),
-    temperature=0.2,
 )
 
 
@@ -238,7 +244,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
         )
 
         # ── Step G: Invoke Gemini ─────────────────────────────────────────
-        response = llm.invoke(system_instruction)
+        response = get_llm().invoke(system_instruction)
         return response.content
 
     except Exception as e:
@@ -270,7 +276,7 @@ def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown
             f"--- DOCUMENT TEXT ---\n{extracted_text[:4000]}"  # Scan the first 4000 characters
         )
 
-        response = llm.invoke(compliance_prompt)
+        response = get_llm().invoke(compliance_prompt)
         response_text = response.content.lower()
 
         # Parse the AI response fields
@@ -313,7 +319,7 @@ def extract_document_metadata(text: str, filename: str) -> dict:
     )
     
     try:
-        response = llm.invoke(prompt)
+        response = get_llm().invoke(prompt)
         content = response.content
         dept = "Unknown"
         doc_type = "Unknown"

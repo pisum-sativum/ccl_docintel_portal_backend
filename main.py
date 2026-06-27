@@ -40,7 +40,8 @@ print(f"[BOOT] FastAPI ready in {time.time() - _boot_start:.2f}s")
 # 2. Configure Cross-Origin Resource Sharing (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    # Allow local dev (http/https) AND any *.onrender.com deployment
+    allow_origin_regex=r"(https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.onrender\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
