@@ -39,8 +39,8 @@ print(f"[BOOT] FastAPI ready in {time.time() - _boot_start:.2f}s")
 # 2. Configure Cross-Origin Resource Sharing (CORS)
 app.add_middleware(
     CORSMiddleware,
-    # Allow local dev (http/https) AND any *.onrender.com deployment
-    allow_origin_regex=r"(https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.onrender\.com)",
+    # Allow local dev (http/https), any *.onrender.com, and any *.vercel.app deployment
+    allow_origin_regex=r"(https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.onrender\.com|https://.*\.vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -166,19 +166,10 @@ def get_compliance_alerts(db: Session = Depends(get_db)):
 def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """
     Returns a paginated slice of documents.
-    Auto-prunes database records if the physical file was deleted from disk.
+    NOTE: Auto-pruning has been REMOVED because Render uses an ephemeral filesystem.
+    Physical files are lost on every restart, but extracted_text lives in the cloud
+    PostgreSQL DB and must be preserved. Delete via the DELETE endpoint instead.
     """
-    # 1. Prune missing files
-    all_docs = db.query(DocumentMetadata).all()
-    pruned = 0
-    for doc in all_docs:
-        if not os.path.exists(os.path.join(UPLOAD_DIR, doc.filename)):
-            db.delete(doc)
-            pruned += 1
-    if pruned > 0:
-        db.commit()
-
-    # 2. Return paginated data
     base_query = db.query(DocumentMetadata)
     if current_user["role"] != "admin":
         base_query = base_query.filter(DocumentMetadata.access_level.in_(["Public", "Internal"]))
@@ -200,7 +191,9 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
                 "access_level": d.access_level,
                 "department": d.department,
                 "doc_type": d.doc_type,
-                "summary": d.summary
+                "summary": d.summary,
+                "risk_level": d.risk_level,
+                "risk_description": d.risk_description,
             }
             for d in documents
         ]
