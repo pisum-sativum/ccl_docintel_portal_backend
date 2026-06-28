@@ -24,7 +24,7 @@ def get_embedding_engine():
                 return [self.embed_query(t) for t in texts]
 
         _embedding_engine = PatchedEmbeddings(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-001",  # stable, available on all free tier keys
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
     return _embedding_engine
