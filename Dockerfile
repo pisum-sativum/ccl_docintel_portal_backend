@@ -21,9 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the current directory contents into the container at /app
 COPY . .
 
-# Pre-download the sentence-transformer model so it caches in the Docker image
-# This prevents the initial download delay that causes Render port scan timeouts
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Ensure Python logs are not buffered so they appear immediately in Render logs
 ENV PYTHONUNBUFFERED=1
