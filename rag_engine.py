@@ -309,7 +309,7 @@ def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown
         err_str = str(e)
         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
             return {"risk_level": "None", "description": "AI scan delayed due to service rate limits."}
-        return {"risk_level": "None", "description": "Scanner failed to process document."}
+        return {"risk_level": "None", "description": f"Scanner failed to process document: {err_str}"}
 
 def extract_document_metadata(text: str, filename: str) -> dict:
     """
