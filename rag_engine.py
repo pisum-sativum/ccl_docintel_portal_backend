@@ -38,11 +38,17 @@ def get_llm():
     This prevents blocking Uvicorn port binding on Render."""
     global _llm
     if _llm is None:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlockThreshold
         _llm = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
         )
     return _llm
 

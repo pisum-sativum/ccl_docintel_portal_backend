@@ -461,11 +461,19 @@ async def update_document_text(
 def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depends(get_db), _admin: dict = Depends(require_admin)):
     existing_docs = db.query(DocumentMetadata).all()
     existing_filenames = {d.filename for d in existing_docs}
+    
+    try:
+        from rag_engine import get_vector_db
+        v_db = get_vector_db()._collection.get()
+        synced_sources = set(m.get("source") for m in v_db.get("metadatas", []) if m and "source" in m)
+    except Exception:
+        synced_sources = set()
+
     files_on_disk = os.listdir(UPLOAD_DIR)
     imported = 0
     
     for filename in files_on_disk:
-        if filename not in existing_filenames:
+        if filename not in existing_filenames or filename not in synced_sources:
             file_path = os.path.join(UPLOAD_DIR, filename)
             parsed_text = extract_text_from_file(file_path)
             char_count = len(parsed_text)
@@ -487,20 +495,28 @@ def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depend
                         hash_material = f.read()
             file_hash = hashlib.sha256(hash_material).hexdigest()
             
-            db_record = DocumentMetadata(
-                filename=filename,
-                content_type="application/octet-stream",
-                char_count=char_count,
-                extracted_text=parsed_text[:50000],
-                risk_level="Scanning...",
-                risk_description="AI compliance scan in progress.",
-                content_hash=file_hash
-            )
-            db.add(db_record)
-            db.commit()
-            db.refresh(db_record)
+            if filename not in existing_filenames:
+                db_record = DocumentMetadata(
+                    filename=filename,
+                    content_type="application/octet-stream",
+                    char_count=char_count,
+                    extracted_text=parsed_text[:50000],
+                    risk_level="Scanning...",
+                    risk_description="AI compliance scan in progress.",
+                    content_hash=file_hash
+                )
+                db.add(db_record)
+                db.commit()
+                doc_id = db_record.id
+            else:
+                doc = db.query(DocumentMetadata).filter(DocumentMetadata.filename == filename).first()
+                doc.risk_level = "Scanning..."
+                doc.risk_description = "AI compliance scan in progress."
+                doc.extracted_text = parsed_text[:50000]
+                db.commit()
+                doc_id = doc.id
             
-            background_tasks.add_task(_run_ai_background, db_record.id, parsed_text, filename)
+            background_tasks.add_task(_run_ai_background, doc_id, parsed_text, filename)
             imported += 1
             
     return {"status": "Success", "imported": imported, "message": "Missing files are being imported in the background."}
