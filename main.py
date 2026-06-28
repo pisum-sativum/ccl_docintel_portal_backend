@@ -133,6 +133,30 @@ def get_me(current_user: dict = Depends(get_current_user)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@app.get("/api/wake")
+def wake_server():
+    """
+    Pre-warm endpoint called by the frontend on page load.
+    Kicks off PGVector + embedding engine initialization in a background
+    thread so the first real chat request isn't hitting a cold Python
+    import path. Returns immediately so the wakeup loader is fast.
+    """
+    import threading
+
+    def _warm():
+        try:
+            from rag_engine import get_embedding_engine, get_vector_db
+
+            get_embedding_engine()
+            get_vector_db()
+            print("[WAKE] Vector DB and embeddings pre-warmed.")
+        except Exception as e:
+            print(f"[WAKE] Pre-warm skipped: {e}")
+
+    threading.Thread(target=_warm, daemon=True).start()
+    return {"status": "awake"}
+
+
 @app.get("/")
 def read_root():
     return {
