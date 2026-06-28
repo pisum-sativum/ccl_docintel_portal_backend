@@ -18,7 +18,7 @@ def get_embedding_engine():
     if _embedding_engine is None:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         _embedding_engine = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-2",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
     return _embedding_engine
@@ -28,7 +28,7 @@ def get_vector_db():
     if _vector_db is None:
         from langchain_community.vectorstores import Chroma
         _vector_db = Chroma(
-            persist_directory="./chroma_db_v2",
+            persist_directory="./chroma_db_v3",
             embedding_function=get_embedding_engine()
         )
     return _vector_db
