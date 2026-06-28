@@ -6,6 +6,7 @@ import os
 import hashlib
 import re
 import threading
+import mimetypes
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
@@ -267,6 +268,13 @@ async def upload_document(
         parsed_text = extract_text_from_file(file_path)
         char_count = len(parsed_text)
 
+        # ── Fix Content-Type if generic octet-stream ──
+        actual_content_type = file.content_type
+        if not actual_content_type or actual_content_type == "application/octet-stream":
+            guessed_type, _ = mimetypes.guess_type(file.filename)
+            if guessed_type:
+                actual_content_type = guessed_type
+
         # ── 4. Content-aware duplicate detection (Fuzzy/Normalized) ──
         clean_text = re.sub(r'\[Image Metadata\].*?(?=\n\[|$)', '', parsed_text, flags=re.DOTALL)
         clean_text = re.sub(r'\[EXIF Data\].*?(?=\n\[|$)', '', clean_text, flags=re.DOTALL)
@@ -290,9 +298,14 @@ async def upload_document(
                 
                 intersection = incoming_words.intersection(existing_words)
                 union = incoming_words.union(existing_words)
-                if union:
+                
+                # Check for exact string match first (very safe for short files)
+                if clean_text == existing_clean:
+                    existing_by_hash = doc
+                    break
+                elif union:
                     similarity = len(intersection) / len(union)
-                    if similarity > 0.85:  # 85% overlap is considered a duplicate
+                    if similarity > 0.85 and len(union) > 10:  # 85% overlap is considered a duplicate for files > 10 words
                         existing_by_hash = doc
                         break
         else:
@@ -324,7 +337,7 @@ async def upload_document(
         # ── 5. Save a "pending" DB record immediately ──
         db_record = DocumentMetadata(
             filename=file.filename,
-            content_type=file.content_type,
+            content_type=actual_content_type,
             char_count=char_count,
             extracted_text=parsed_text[:50000],   # Store up to 50k chars for viewing
             risk_level="Scanning...",

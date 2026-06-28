@@ -286,14 +286,15 @@ def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown
     try:
         # We instruct the AI to be highly lenient and only flag real issues
         compliance_prompt = (
-            f"You are an industrial compliance auditor. Analyze the following document text "
+            f"You are a strict cybersecurity and compliance AI agent. Review the following text "
             f"and its filename ('{filename}') for extreme operational hazards, critical safety violations, "
-            f"or explicit malicious behavior (like hacking scripts).\n\n"
-            f"**CRITICAL INSTRUCTION: Be lenient! Do NOT raise unnecessary flags for minor administrative issues, "
+            f"exposed credentials, or explicit malicious behavior (like hacking scripts or security vulnerabilities).\n\n"
+            f"**CRITICAL INSTRUCTION: Be lenient on normal files! Do NOT raise unnecessary flags for minor administrative issues, "
             f"standard maintenance reports, or benign text. Only flag things that are genuinely dangerous or malicious.**\n\n"
-            f"IMPORTANT: Be highly lenient. Normal business documents, manuals, standard guidelines, "
+            f"IMPORTANT: Normal business documents, manuals, standard guidelines, "
             f"routine maintenance logs, standard contracts, or typical IT policies MUST be marked as 'None' risk. "
-            f"ONLY mark 'High' or 'Medium' if there is an explicit, severe violation or malicious threat.\n\n"
+            f"HOWEVER, if the document contains exposed passwords, hacking instructions, or states that it is a security issue, "
+            f"you MUST mark it as 'High' or 'Medium' risk.\n\n"
             f"Respond in exactly this format:\n"
             f"RISK: [High, Medium, or None]\n"
             f"REASON: [A short 1-sentence description of the hazard found]\n\n"
