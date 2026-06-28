@@ -469,9 +469,18 @@ def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depend
     except Exception:
         synced_sources = set()
 
-    files_on_disk = os.listdir(UPLOAD_DIR)
+    files_on_disk = os.listdir(UPLOAD_DIR) if os.path.exists(UPLOAD_DIR) else []
     imported = 0
     
+    # Rescan files that are in Postgres but failed scanning previously
+    for doc in existing_docs:
+        if "Scanner failed" in (doc.risk_description or ""):
+            doc.risk_level = "Scanning..."
+            doc.risk_description = "AI compliance scan in progress."
+            db.commit()
+            background_tasks.add_task(_run_ai_background, doc.id, doc.extracted_text or "", doc.filename)
+            imported += 1
+
     for filename in files_on_disk:
         if filename not in existing_filenames or filename not in synced_sources:
             file_path = os.path.join(UPLOAD_DIR, filename)
