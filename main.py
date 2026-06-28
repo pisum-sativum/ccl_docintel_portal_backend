@@ -298,9 +298,10 @@ async def upload_document(
                 
                 intersection = incoming_words.intersection(existing_words)
                 union = incoming_words.union(existing_words)
+                existing_normalized = re.sub(r'\W+', '', existing_clean)
                 
-                # Check for exact string match first (very safe for short files)
-                if clean_text == existing_clean:
+                # Check for exact string match first (ignoring whitespace and punctuation, very safe for short files)
+                if normalized == existing_normalized:
                     existing_by_hash = doc
                     break
                 elif union:
