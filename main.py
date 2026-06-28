@@ -280,17 +280,45 @@ def _run_vector_injection(parsed_text: str, filename: str, access_level: str):
             print(f"[BG] Vector injection failed for '{filename}': {e}")
 
 
-def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal"):
+def _run_ai_background(
+    doc_id: int, filename: str, access_level: str = "Internal", text: str = None
+):
     """
     Phase 1: Extract text + AI scan + update DB badge immediately.
     Phase 2: Vector injection fires in its own thread so badge updates FAST.
+
+    `text` – pre-supplied text (e.g. after a manual edit via update_document_text).
+             When provided, disk reading is skipped entirely so the edited text
+             is never overwritten by the original file content.
+             When None, the file is read from disk with a DB fallback for
+             Render restarts where the ephemeral filesystem was wiped.
     """
     try:
         with _ai_semaphore:
-            file_path = os.path.join(UPLOAD_DIR, filename)
-            parsed_text = extract_text_from_file(file_path)
-            char_count = len(parsed_text)
+            if text is not None:
+                # Use caller-supplied text (manual edit path)
+                parsed_text = text
+            else:
+                file_path = os.path.join(UPLOAD_DIR, filename)
+                if os.path.exists(file_path):
+                    parsed_text = extract_text_from_file(file_path)
+                else:
+                    # Render ephemeral disk was wiped — fall back to stored DB text
+                    print(
+                        f"[BG] File '{filename}' missing from disk; using stored text."
+                    )
+                    _db = SessionLocal()
+                    try:
+                        _doc = (
+                            _db.query(DocumentMetadata)
+                            .filter(DocumentMetadata.id == doc_id)
+                            .first()
+                        )
+                        parsed_text = (_doc.extracted_text or "") if _doc else ""
+                    finally:
+                        _db.close()
 
+            char_count = len(parsed_text)
             analysis_result = analyze_document(parsed_text, filename)
 
         db = SessionLocal()
@@ -300,7 +328,10 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
             )
             if doc:
                 doc.char_count = char_count
-                doc.extracted_text = parsed_text[:50000]
+                # Only overwrite extracted_text when we actually read it ourselves
+                # (i.e., text was not pre-supplied by the caller)
+                if text is None:
+                    doc.extracted_text = parsed_text[:50000]
                 doc.risk_level = analysis_result["risk_level"]
                 doc.risk_description = analysis_result["description"]
                 doc.department = analysis_result.get("department", "Unknown")
@@ -332,8 +363,8 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
             )
             if doc:
                 doc.risk_level = "Error"
-                doc.risk_description = "System Error during background processing."
-                doc.extracted_text = f"CRASH LOG:\n{err_msg}"
+                # Only store the crash summary — never overwrite the document's text
+                doc.risk_description = f"Scan failed: {str(e)[:200]}"
                 db.commit()
         except:
             pass
@@ -560,9 +591,14 @@ async def update_document_text(
 
     db.commit()
 
-    # 2. Re-run AI indexing background task
+    # 2. Re-run AI analysis on the NEW text (pass text directly so the
+    #    background task never re-reads from disk and overwrites the edit)
     background_tasks.add_task(
-        _run_ai_background, doc.id, doc.filename, doc.access_level or "Internal"
+        _run_ai_background,
+        doc.id,
+        doc.filename,
+        doc.access_level or "Internal",
+        payload.text,
     )
 
     return {"status": "Success", "message": "Document text updated. Re-scanning."}
