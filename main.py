@@ -212,12 +212,17 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
 # Global lock to prevent Gemini API concurrency rate limit errors on the free tier.
 _ai_scan_lock = threading.Lock()
 
-def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_level: str = "Internal"):
+def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal"):
     """
     Runs the slow AI compliance scan and vector indexing in a background thread.
     Updates the DB record when done so the dashboard reflects the final result.
     """
     try:
+        # 0. Extract text (moved from upload route to background)
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        parsed_text = extract_text_from_file(file_path)
+        char_count = len(parsed_text)
+
         # 1. AI analysis (Compliance scan + Metadata extraction combined, ~2-4 seconds)
         # We acquire a lock here because Gemini Free Tier has a strict concurrency limit (e.g., 2 concurrent requests).
         # By processing these sequentially, we eliminate 99% of rate-limit 429 errors!
@@ -227,11 +232,13 @@ def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_leve
         # 2. Vector store injection (CPU embedding, ~1-3 seconds)
         inject_text_into_vector_store(parsed_text, filename, access_level)
 
-        # 3. Update the DB record with the final AI results
+        # 3. Update the DB record with the final AI results and extracted text
         db = SessionLocal()
         try:
             doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
             if doc:
+                doc.char_count = char_count
+                doc.extracted_text = parsed_text[:50000]
                 doc.risk_level = analysis_result["risk_level"]
                 doc.risk_description = analysis_result["description"]
                 doc.department = analysis_result.get("department", "Unknown")
@@ -272,45 +279,11 @@ async def upload_document(
         with open(file_path, "wb") as buffer:
             buffer.write(content)
 
-        # ── 3. Extract text (fast local operation) ──
-        parsed_text = extract_text_from_file(file_path)
-        char_count = len(parsed_text)
-
-        # ── Fix Content-Type if generic octet-stream ──
-        actual_content_type = file.content_type
-        if not actual_content_type or actual_content_type == "application/octet-stream":
-            guessed_type, _ = mimetypes.guess_type(file.filename)
-            if guessed_type:
-                actual_content_type = guessed_type
-
-        # ── 4. Content-aware duplicate detection (Fuzzy/Normalized) ──
-        clean_text = re.sub(r'\[Image Metadata\].*?(?=\n\[|$)', '', parsed_text, flags=re.DOTALL)
-        clean_text = re.sub(r'\[EXIF Data\].*?(?=\n\[|$)', '', clean_text, flags=re.DOTALL)
-        clean_text = re.sub(r'\[OCR Error\].*?(?=\n\[|$)', '', clean_text, flags=re.DOTALL)
-        clean_text = clean_text.strip().lower()
-
-        existing_by_hash = None
-        if clean_text:
-            normalized = re.sub(r'\W+', '', clean_text)
-            hash_material = normalized.encode('utf-8')
-            file_hash = hashlib.sha256(hash_material).hexdigest()
-            
-            # Fast exact-hash lookup (ignoring punctuation/whitespace via normalization)
-            existing_by_hash = db.query(DocumentMetadata).filter(
-                DocumentMetadata.content_hash == file_hash
-            ).first()
-        else:
-            try:
-                from PIL import Image as PilImage
-                img = PilImage.open(file_path).convert("RGB").resize((32, 32), PilImage.Resampling.LANCZOS)
-                hash_material = img.tobytes()
-            except Exception:
-                hash_material = content
-
-            file_hash = hashlib.sha256(hash_material).hexdigest()
-            existing_by_hash = db.query(DocumentMetadata).filter(
-                DocumentMetadata.content_hash == file_hash
-            ).first()
+        # ── 3. Fast Duplicate Detection (Raw File Hash) ──
+        file_hash = hashlib.sha256(content).hexdigest()
+        existing_by_hash = db.query(DocumentMetadata).filter(
+            DocumentMetadata.content_hash == file_hash
+        ).first()
         
         if existing_by_hash:
             if not force:
@@ -323,14 +296,20 @@ async def upload_document(
                         "message": f"This file contains the same data as '{existing_by_hash.filename}'."
                     }
                 )
-            # If force=True, we proceed and keep the file despite the similarity.
+
+        # ── 4. Fix Content-Type ──
+        actual_content_type = file.content_type
+        if not actual_content_type or actual_content_type == "application/octet-stream":
+            guessed_type, _ = mimetypes.guess_type(file.filename)
+            if guessed_type:
+                actual_content_type = guessed_type
 
         # ── 5. Save a "pending" DB record immediately ──
         db_record = DocumentMetadata(
             filename=file.filename,
             content_type=actual_content_type,
-            char_count=char_count,
-            extracted_text=parsed_text[:50000],   # Store up to 50k chars for viewing
+            char_count=0,
+            extracted_text="",   
             risk_level="Scanning...",
             risk_description="AI compliance scan in progress.",
             content_hash=file_hash,
@@ -341,15 +320,15 @@ async def upload_document(
         db.commit()
         db.refresh(db_record)
 
-        # ── 6. Offload slow AI work to background thread ──
-        background_tasks.add_task(_run_ai_background, db_record.id, parsed_text, file.filename, access_level)
+        # ── 6. Offload ALL slow work (text extraction + AI) to background thread ──
+        background_tasks.add_task(_run_ai_background, db_record.id, file.filename, access_level)
 
         # ── 7. Return immediately ──
         return {
             "status": "Success",
             "filename": db_record.filename,
-            "characterCount": char_count,
-            "previewText": parsed_text[:2000],
+            "characterCount": 0,
+            "previewText": "",
             "message": "File saved. AI compliance scan running in background."
         }
 
@@ -409,6 +388,7 @@ def get_document_file(doc_id: int, db: Session = Depends(get_db), current_user: 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(
     doc_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     _admin: dict = Depends(require_admin)  # 🔒 ADMIN ONLY
 ):
@@ -417,10 +397,10 @@ def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    # 1. Remove from vector store
+    # 1. Remove from vector store (in background to make UI instant)
     try:
         from rag_engine import delete_document_from_vector_store
-        delete_document_from_vector_store(doc.filename)
+        background_tasks.add_task(delete_document_from_vector_store, doc.filename)
     except Exception:
         pass
 
