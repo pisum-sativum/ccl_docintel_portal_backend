@@ -209,13 +209,20 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
 # ADMIN-ONLY ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+import threading
+
+# Limit concurrent processing to prevent Render Free Tier Out-Of-Memory (OOM 512MB limit)
+_ai_semaphore = threading.Semaphore(2)
+_vector_semaphore = threading.Semaphore(2)
+
 def _run_vector_injection(parsed_text: str, filename: str, access_level: str):
     """Phase 2: Vector injection runs AFTER badge is updated (non-blocking)."""
-    try:
-        inject_text_into_vector_store(parsed_text, filename, access_level)
-        print(f"[BG] Vector injection done for '{filename}'.")
-    except Exception as e:
-        print(f"[BG] Vector injection failed for '{filename}': {e}")
+    with _vector_semaphore:
+        try:
+            inject_text_into_vector_store(parsed_text, filename, access_level)
+            print(f"[BG] Vector injection done for '{filename}'.")
+        except Exception as e:
+            print(f"[BG] Vector injection failed for '{filename}': {e}")
 
 
 def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal"):
@@ -224,11 +231,12 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
     Phase 2: Vector injection fires in its own thread so badge updates FAST.
     """
     try:
-        file_path = os.path.join(UPLOAD_DIR, filename)
-        parsed_text = extract_text_from_file(file_path)
-        char_count = len(parsed_text)
-
-        analysis_result = analyze_document(parsed_text, filename)
+        with _ai_semaphore:
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            parsed_text = extract_text_from_file(file_path)
+            char_count = len(parsed_text)
+    
+            analysis_result = analyze_document(parsed_text, filename)
 
         db = SessionLocal()
         try:
