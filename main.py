@@ -249,7 +249,21 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
         finally:
             db.close()
     except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
         print(f"[BG] Background AI task failed for '{filename}': {e}")
+        db = SessionLocal()
+        try:
+            doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            if doc:
+                doc.risk_level = "Error"
+                doc.risk_description = "System Error during background processing."
+                doc.extracted_text = f"CRASH LOG:\n{err_msg}"
+                db.commit()
+        except:
+            pass
+        finally:
+            db.close()
 
 
 @app.post("/api/upload")
