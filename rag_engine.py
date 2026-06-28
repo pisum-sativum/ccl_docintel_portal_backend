@@ -260,7 +260,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
         err_str = str(e)
         if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
             return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
-        return "⚠️ We encountered a temporary issue connecting to the AI engine. Please try again."
+        return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
 
 
 # ── 5. Compliance Risk Scanner ────────────────────────────────────────────────
