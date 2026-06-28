@@ -45,7 +45,7 @@ def get_llm():
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
         )
@@ -283,6 +283,8 @@ def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown
             f"You are an industrial compliance auditor. Analyze the following document text "
             f"and its filename ('{filename}') for extreme operational hazards, critical safety violations, "
             f"or explicit malicious behavior (like hacking scripts).\n\n"
+            f"**CRITICAL INSTRUCTION: Be lenient! Do NOT raise unnecessary flags for minor administrative issues, "
+            f"standard maintenance reports, or benign text. Only flag things that are genuinely dangerous or malicious.**\n\n"
             f"IMPORTANT: Be highly lenient. Normal business documents, manuals, standard guidelines, "
             f"routine maintenance logs, standard contracts, or typical IT policies MUST be marked as 'None' risk. "
             f"ONLY mark 'High' or 'Medium' if there is an explicit, severe violation or malicious threat.\n\n"
