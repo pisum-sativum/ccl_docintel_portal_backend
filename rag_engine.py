@@ -18,7 +18,7 @@ def get_embedding_engine():
     if _embedding_engine is None:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         _embedding_engine = GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-2",
+            model="models/text-embedding-004",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
     return _embedding_engine
@@ -89,7 +89,7 @@ def inject_text_into_vector_store(raw_text: str, filename: str, access_level: st
         print(f"📦 [VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")
         return True
     except Exception as e:
-        print(f"❌ [VECTOR CRASH] Indexing aborted: {str(e)}")
+        print(f"[VECTOR CRASH] Indexing aborted: {str(e)}")
         return False
 
 
