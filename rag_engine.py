@@ -265,7 +265,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
 
         # ── Step G: Invoke Gemini with automatic retries for rate limits ──
         import time
-        max_attempts = 2  # Fail fast
+        max_attempts = 3  
         for attempt in range(max_attempts):
             try:
                 response = get_llm().invoke(system_instruction)
@@ -274,7 +274,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
                     if attempt < max_attempts - 1:
-                        time.sleep(5)  # Short sleep
+                        time.sleep(10)  
                         continue
                     return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
                 return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
@@ -318,7 +318,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
         )
 
         import time
-        max_attempts = 2  # Fail fast to avoid hanging the queue
+        max_attempts = 3  
         for attempt in range(max_attempts):
             try:
                 response = get_llm().invoke(prompt)
@@ -327,8 +327,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
                     if attempt < max_attempts - 1:
-                        # Short sleep to recover from minor rate bumps, but don't hold the lock forever
-                        time.sleep(5)
+                        time.sleep(10) # 10s wait ensures we clear the 6s retryDelay from Google
                         continue
                     return {
                         "risk_level": "Error", 
