@@ -289,28 +289,10 @@ async def upload_document(
             hash_material = normalized.encode('utf-8')
             file_hash = hashlib.sha256(hash_material).hexdigest()
             
-            incoming_words = set(clean_text.split())
-            all_existing = db.query(DocumentMetadata).all()
-            for doc in all_existing:
-                if not doc.extracted_text: continue
-                existing_clean = re.sub(r'\[Image Metadata\].*?(?=\n\[|$)', '', doc.extracted_text, flags=re.DOTALL)
-                existing_clean = re.sub(r'\[EXIF Data\].*?(?=\n\[|$)', '', existing_clean, flags=re.DOTALL)
-                existing_clean = existing_clean.strip().lower()
-                existing_words = set(existing_clean.split())
-                
-                intersection = incoming_words.intersection(existing_words)
-                union = incoming_words.union(existing_words)
-                existing_normalized = re.sub(r'\W+', '', existing_clean)
-                
-                # Check for exact string match first (ignoring whitespace and punctuation, very safe for short files)
-                if normalized == existing_normalized:
-                    existing_by_hash = doc
-                    break
-                elif union:
-                    similarity = len(intersection) / len(union)
-                    if similarity > 0.85 and len(union) > 10:  # 85% overlap is considered a duplicate for files > 10 words
-                        existing_by_hash = doc
-                        break
+            # Fast exact-hash lookup (ignoring punctuation/whitespace via normalization)
+            existing_by_hash = db.query(DocumentMetadata).filter(
+                DocumentMetadata.content_hash == file_hash
+            ).first()
         else:
             try:
                 from PIL import Image as PilImage

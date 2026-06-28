@@ -300,11 +300,12 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
     try:
         prompt = (
             f"You are a strict cybersecurity and document analysis AI agent. Review the following text "
-            f"from '{filename}' and perform both a compliance scan and metadata extraction.\n\n"
+            f"and its filename ('{filename}') for extreme operational hazards, critical safety violations, "
+            f"exposed credentials, and security risks. Perform both a compliance scan and metadata extraction.\n\n"
             f"**COMPLIANCE SCAN INSTRUCTIONS:**\n"
-            f"Be lenient on normal files! Do NOT flag minor administrative issues, normal guidelines, or benign text. "
-            f"HOWEVER, if the document contains exposed passwords, hacking instructions, or states it is a security issue, "
-            f"you MUST mark it as 'High' or 'Medium' risk.\n\n"
+            f"Be lenient on normal business files! Do NOT flag minor administrative issues, normal guidelines, or benign text as High/Medium risk.\n"
+            f"HOWEVER, if the document contains passwords, hacking instructions, malicious payloads, or if its filename indicates it is a security issue, "
+            f"you MUST mark it as 'High' risk.\n\n"
             f"**METADATA INSTRUCTIONS:**\n"
             f"Extract the Department (HR, Legal, IT, etc), Type (Form, Policy, Memo, etc), and a concise 1-2 sentence Summary.\n\n"
             f"Respond ONLY in this EXACT format (do not add markdown blocks):\n"
@@ -317,7 +318,8 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
         )
 
         import time
-        max_attempts = 3
+        import random
+        max_attempts = 4
         for attempt in range(max_attempts):
             try:
                 response = get_llm().invoke(prompt)
@@ -326,7 +328,9 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
                     if attempt < max_attempts - 1:
-                        time.sleep(10)
+                        # Add jitter to avoid thundering herd on concurrent uploads
+                        sleep_time = random.uniform(5.0, 15.0) * (attempt + 1)
+                        time.sleep(sleep_time)
                         continue
                     return {
                         "risk_level": "None", 
