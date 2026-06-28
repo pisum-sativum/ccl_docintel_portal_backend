@@ -9,7 +9,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -330,7 +330,8 @@ async def upload_document(
             risk_level="Scanning...",
             risk_description="AI compliance scan in progress.",
             content_hash=file_hash,
-            access_level=access_level
+            access_level=access_level,
+            raw_file_data=content
         )
         db.add(db_record)
         db.commit()
@@ -383,11 +384,18 @@ def get_document_file(doc_id: int, db: Session = Depends(get_db), current_user: 
         raise HTTPException(status_code=404, detail="Document not found.")
     if current_user["role"] != "admin" and doc.access_level == "Confidential":
         raise HTTPException(status_code=403, detail="Access denied. Confidential document.")
+    # Return from database if available (this survives Render restarts)
+    if getattr(doc, "raw_file_data", None) is not None:
+        headers = {}
+        if doc.content_type == "application/pdf":
+            headers["Content-Disposition"] = f'inline; filename="{doc.filename}"'
+        return Response(content=doc.raw_file_data, media_type=doc.content_type, headers=headers)
+        
+    # Fallback to local disk (might be wiped by Render, but keep just in case)
     file_path = os.path.join(UPLOAD_DIR, doc.filename)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Physical file missing from disk.")
+        raise HTTPException(status_code=404, detail="Physical file missing from disk and no backup in database.")
     
-    # Force inline disposition for PDF so the browser views it instead of downloading
     headers = {}
     if doc.content_type == "application/pdf":
         headers["Content-Disposition"] = f'inline; filename="{doc.filename}"'

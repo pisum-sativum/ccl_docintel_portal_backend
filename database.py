@@ -1,6 +1,6 @@
 import os
 import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -38,6 +38,7 @@ class DocumentMetadata(Base):
     department = Column(String, nullable=True)
     doc_type = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
+    raw_file_data = Column(LargeBinary, nullable=True)
 
 class User(Base):
     __tablename__ = "users"
