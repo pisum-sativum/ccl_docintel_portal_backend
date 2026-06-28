@@ -29,12 +29,24 @@ def get_embedding_engine():
     return _embedding_engine
 
 def get_vector_db():
+    """
+    Returns a persistent PGVector store backed by Neon PostgreSQL.
+    Survives Render restarts — no data loss.
+    """
     global _vector_db
     if _vector_db is None:
-        from langchain_community.vectorstores import Chroma
-        _vector_db = Chroma(
-            persist_directory="./chroma_db_v3",
-            embedding_function=get_embedding_engine()
+        from langchain_postgres.vectorstores import PGVector
+        connection_string = os.getenv("DATABASE_URL", "")
+        # langchain-postgres requires postgresql:// scheme (not postgres://)
+        if connection_string.startswith("postgres://"):
+            connection_string = connection_string.replace("postgres://", "postgresql+psycopg://", 1)
+        elif connection_string.startswith("postgresql://"):
+            connection_string = connection_string.replace("postgresql://", "postgresql+psycopg://", 1)
+        _vector_db = PGVector(
+            embeddings=get_embedding_engine(),
+            collection_name="ccl_docintel_vectors",
+            connection=connection_string,
+            use_jsonb=True,
         )
     return _vector_db
 
@@ -69,29 +81,37 @@ def warm_up():
 
 
 # ── 2. Data Ingestion ─────────────────────────────────────────────────────────
+def delete_document_from_vector_store(filename: str):
+    """
+    Removes all vector chunks for a given filename from PGVector.
+    """
+    try:
+        vdb = get_vector_db()
+        vdb.delete(ids=None, filter={"source": filename})
+        print(f"[DEDUP] Removed stale chunks for '{filename}'")
+    except Exception as del_err:
+        print(f"[DEDUP WARN] Could not remove old chunks: {del_err}")
+
+
 def inject_text_into_vector_store(raw_text: str, filename: str, access_level: str = "Internal") -> bool:
     """
-    Indexes document text into ChromaDB.
-    FIX: Deletes any previously stored chunks for this filename first,
+    Indexes document text into PGVector (persistent Neon PostgreSQL).
+    Deletes any previously stored chunks for this filename first,
     preventing duplicate context build-up on re-uploads.
     """
     if not raw_text or raw_text.startswith("[Parsing Failure]"):
         return False
     try:
         # ── Delete old chunks for this file before re-indexing ────────────
-        try:
-            existing = get_vector_db()._collection.get(where={"source": filename})
-            if existing and existing.get("ids"):
-                get_vector_db()._collection.delete(ids=existing["ids"])
-                print(f"🗑️  [DEDUP] Removed {len(existing['ids'])} stale chunks for '{filename}'")
-        except Exception as del_err:
-            print(f"⚠️  [DEDUP WARN] Could not remove old chunks: {del_err}")
+        delete_document_from_vector_store(filename)
 
         # ── Split and re-index ────────────────────────────────────────────
         chunks = get_text_splitter().split_text(raw_text)
+        if not chunks:
+            return False
         metadata_tags = [{"source": filename, "access_level": access_level} for _ in chunks]
         get_vector_db().add_texts(texts=chunks, metadatas=metadata_tags)
-        print(f"📦 [VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")
+        print(f"[VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")
         return True
     except Exception as e:
         print(f"[VECTOR CRASH] Indexing aborted: {str(e)}")
@@ -127,43 +147,31 @@ def _normalize_number_query(query: str) -> list[str]:
 
 def _get_all_chunks_from_db(filter_criteria=None) -> list:
     """
-    Fetches ALL stored chunks directly from ChromaDB (bypasses semantic scoring).
-    Returns list of objects with .page_content and .metadata attributes.
+    Fetches ALL stored chunks from PGVector using a broad similarity search
+    (bypasses semantic scoring for keyword matching).
+    Returns list of langchain Document objects with .page_content and .metadata.
     """
     try:
-        kwargs = {"include": ["documents", "metadatas"]}
+        vdb = get_vector_db()
+        # Use a max-fetch similarity search with a neutral query
+        kwargs = {"k": 3000}
         if filter_criteria:
-            kwargs["where"] = filter_criteria
-        result = get_vector_db()._collection.get(**kwargs)
-        docs  = result.get("documents", [])
-        metas = result.get("metadatas", []) or [{}] * len(docs)
-
-        class _Chunk:
-            def __init__(self, text, meta):
-                self.page_content = text
-                self.metadata     = meta
-
-        return [_Chunk(d, m) for d, m in zip(docs, metas)]
+            # Convert Chroma-style filter to PGVector filter format
+            access_filter = filter_criteria.get("access_level", {}).get("$in")
+            if access_filter:
+                kwargs["filter"] = {"access_level": {"$in": access_filter}}
+        results = vdb.similarity_search("compliance document text", **kwargs)
+        return results
     except Exception as e:
-        print(f"⚠️ [FULL SCAN ERROR] {e}")
+        print(f"[FULL SCAN ERROR] {e}")
         return []
 
 
 def _keyword_scan_all(query: str, top_n: int = 6, filter_criteria=None) -> list:
     """
-    Case-insensitive keyword scan across ALL ChromaDB chunks.
-    Skipped automatically if the collection is very large (>3000 chunks)
-    to avoid linear-scan performance degradation at scale.
+    Case-insensitive keyword scan across all PGVector chunks.
+    Uses the fetched chunk list from _get_all_chunks_from_db.
     """
-    # ── Scale guard: skip full scan for very large DBs ────────────────────
-    try:
-        total_chunks = get_vector_db()._collection.count()
-        if total_chunks > 3000:
-            print(f"⚡ [SCALE GUARD] {total_chunks} chunks — skipping full keyword scan")
-            return []
-    except Exception:
-        pass
-
     all_chunks = _get_all_chunks_from_db(filter_criteria)
     if not all_chunks:
         return []

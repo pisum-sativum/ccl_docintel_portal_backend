@@ -407,11 +407,8 @@ def delete_document(
 
     # 1. Remove from vector store
     try:
-        from rag_engine import get_vector_db
-        vector_db = get_vector_db()
-        existing = vector_db._collection.get(where={"source": doc.filename})
-        if existing and existing.get("ids"):
-            vector_db._collection.delete(ids=existing["ids"])
+        from rag_engine import delete_document_from_vector_store
+        delete_document_from_vector_store(doc.filename)
     except Exception:
         pass
 
@@ -464,8 +461,10 @@ def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depend
     
     try:
         from rag_engine import get_vector_db
-        v_db = get_vector_db()._collection.get()
-        synced_sources = set(m.get("source") for m in v_db.get("metadatas", []) if m and "source" in m)
+        # Get all synced sources from PGVector using SQL filter
+        vdb = get_vector_db()
+        results = vdb.similarity_search(".", k=10000)  # fetch all
+        synced_sources = set(d.metadata.get("source") for d in results if d.metadata.get("source"))
     except Exception:
         synced_sources = set()
 
