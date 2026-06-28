@@ -21,6 +21,8 @@ def get_embedding_engine():
             model="models/gemini-embedding-001",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
+        # Fix LangChain list index out of range bug for batch embeddings
+        _embedding_engine.embed_documents = lambda texts: [_embedding_engine.embed_query(t) for t in texts]
     return _embedding_engine
 
 def get_vector_db():
@@ -40,7 +42,7 @@ def get_llm():
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
         )
