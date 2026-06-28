@@ -16,8 +16,11 @@ _text_splitter = None
 def get_embedding_engine():
     global _embedding_engine
     if _embedding_engine is None:
-        from langchain_community.embeddings import SentenceTransformerEmbeddings
-        _embedding_engine = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        _embedding_engine = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=os.getenv("GEMINI_API_KEY", "")
+        )
     return _embedding_engine
 
 def get_vector_db():
