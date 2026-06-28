@@ -332,7 +332,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                         continue
                     return {
                         "risk_level": "Error", 
-                        "description": "AI scan aborted. Google Gemini rate limit exceeded. Please wait a minute and retry.",
+                        "description": f"AI scan aborted due to Gemini API limits. Please wait a minute and retry. (Details: {err_str})",
                         "department": "Unknown", 
                         "doc_type": "Unknown", 
                         "summary": "Scan failed (API limits)."
