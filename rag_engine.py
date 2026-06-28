@@ -17,12 +17,15 @@ def get_embedding_engine():
     global _embedding_engine
     if _embedding_engine is None:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        _embedding_engine = GoogleGenerativeAIEmbeddings(
+        class PatchedEmbeddings(GoogleGenerativeAIEmbeddings):
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                # Fix LangChain list index out of range bug for batch embeddings
+                return [self.embed_query(t) for t in texts]
+
+        _embedding_engine = PatchedEmbeddings(
             model="models/gemini-embedding-001",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
-        # Fix LangChain list index out of range bug for batch embeddings
-        _embedding_engine.embed_documents = lambda texts: [_embedding_engine.embed_query(t) for t in texts]
     return _embedding_engine
 
 def get_vector_db():
