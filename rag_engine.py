@@ -276,13 +276,11 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
                     if attempt < max_attempts - 1:
                         time.sleep(10)  # Wait 10 seconds and retry
                         continue
-                raise e
-
+                    return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
+                return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
+                
     except Exception as e:
-        err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
-            return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
-        return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
+        return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {str(e)}"
 
 
 def analyze_document(extracted_text: str, filename: str) -> dict:
@@ -330,7 +328,21 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                     if attempt < max_attempts - 1:
                         time.sleep(10)
                         continue
-                raise e
+                    return {
+                        "risk_level": "None", 
+                        "description": "AI scan delayed due to service rate limits.",
+                        "department": "Unknown", 
+                        "doc_type": "Unknown", 
+                        "summary": "Extraction paused (rate limit)."
+                    }
+                return {
+                    "risk_level": "None", 
+                    "description": f"Scanner failed: {err_str}",
+                    "department": "Unknown", 
+                    "doc_type": "Unknown", 
+                    "summary": "Extraction failed due to an error."
+                }
+
         content = response.content.replace("*", "").replace("`", "")
         
         result = {
@@ -357,16 +369,9 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 result["summary"] = line[8:].strip()
                 
         return result
+
     except Exception as e:
         err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-            return {
-                "risk_level": "None", 
-                "description": "AI scan delayed due to service rate limits.",
-                "department": "Unknown", 
-                "doc_type": "Unknown", 
-                "summary": "Extraction paused (rate limit)."
-            }
         return {
             "risk_level": "None", 
             "description": f"Scanner failed: {err_str}",
