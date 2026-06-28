@@ -263,9 +263,20 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
             f"User Question: {user_question}"
         )
 
-        # ── Step G: Invoke Gemini ─────────────────────────────────────────
-        response = get_llm().invoke(system_instruction)
-        return response.content
+        # ── Step G: Invoke Gemini with automatic retries for rate limits ──
+        import time
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                response = get_llm().invoke(system_instruction)
+                return response.content
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
+                    if attempt < max_attempts - 1:
+                        time.sleep(10)  # Wait 10 seconds and retry
+                        continue
+                raise e
 
     except Exception as e:
         err_str = str(e)
@@ -307,7 +318,19 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
             f"--- DOCUMENT TEXT ---\n{extracted_text[:4000]}"
         )
 
-        response = get_llm().invoke(prompt)
+        import time
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                response = get_llm().invoke(prompt)
+                break
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
+                    if attempt < max_attempts - 1:
+                        time.sleep(10)
+                        continue
+                raise e
         content = response.content.replace("*", "").replace("`", "")
         
         result = {
