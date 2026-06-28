@@ -1,43 +1,53 @@
 import time
+
 _boot_start = time.time()
 print(f"[BOOT] main.py import started at {_boot_start}")
 
-import os
 import hashlib
+import mimetypes
+import os
 import re
 import threading
-import mimetypes
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Form
-from fastapi.responses import FileResponse, Response
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from auth import create_access_token, get_current_user, require_admin, verify_password
+from database import DocumentMetadata, SessionLocal, User, get_db, init_db
 
 # Import custom application modules
 from extractor import extract_text_from_file
-from database import init_db, get_db, DocumentMetadata, User, SessionLocal
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from rag_engine import (
     analyze_document,
+    delete_document_from_vector_store,
     inject_text_into_vector_store,
     query_document_intelligence,
-    delete_document_from_vector_store
 )
-from auth import (
-    verify_password, create_access_token,
-    get_current_user, require_admin
-)
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
+
     from rag_engine import warm_up
+
     loop = asyncio.get_event_loop()
     # Removed init_db and warm_up from lifespan to prevent Render port binding timeout
     # Tables should be created via migrate.py or a pre-deploy command.
     yield
+
 
 app = FastAPI(title="CCL DocIntel API Engine", lifespan=lifespan)
 print(f"[BOOT] FastAPI ready in {time.time() - _boot_start:.2f}s")
@@ -52,10 +62,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class StripLocaleMiddleware:
     def __init__(self, app):
         self.app = app
-    
+
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "")
@@ -66,6 +77,7 @@ class StripLocaleMiddleware:
                     scope["raw_path"] = match.group(2).encode("ascii")
         await self.app(scope, receive, send)
 
+
 app.add_middleware(StripLocaleMiddleware)
 
 # Set up local temporary document repository directory
@@ -74,18 +86,22 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "documents")
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
+
 # Data Validation Models
 class ChatQuery(BaseModel):
     query_text: str
     history: list[dict] = []
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTH ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -94,41 +110,58 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is disabled. Contact your administrator.")
+        raise HTTPException(
+            status_code=403, detail="Account is disabled. Contact your administrator."
+        )
     token = create_access_token(data={"sub": user.username, "role": user.role})
-    return {"access_token": token, "token_type": "bearer", "role": user.role, "username": user.username}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "role": user.role,
+        "username": user.username,
+    }
+
 
 @app.get("/api/auth/me")
 def get_me(current_user: dict = Depends(get_current_user)):
     """Returns the currently authenticated user's info."""
     return current_user
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @app.get("/")
 def read_root():
     return {
         "status": "Online",
         "system": "CCL DocIntel Core Engine",
-        "database": "Neon Cloud PostgreSQL Connected"
+        "database": "Neon Cloud PostgreSQL Connected",
     }
+
 
 @app.post("/api/chat")
 def handle_chat(payload: ChatQuery, current_user: dict = Depends(get_current_user)):
     """RAG chat endpoint — open to all authenticated users."""
-    ai_response_text = query_document_intelligence(payload.query_text, payload.history, user_role=current_user["role"])
+    ai_response_text = query_document_intelligence(
+        payload.query_text, payload.history, user_role=current_user["role"]
+    )
     return {"sender": "bot", "text": ai_response_text}
+
 
 @app.get("/api/analytics/summary")
 def get_analytics_summary(db: Session = Depends(get_db)):
     total_docs = db.query(func.count(DocumentMetadata.id)).scalar() or 0
     total_chars = db.query(func.sum(DocumentMetadata.char_count)).scalar() or 0
     vectorized_nodes = int(total_chars / 200) if total_chars > 0 else 0
-    active_flags = db.query(func.count(DocumentMetadata.id)).filter(
-        DocumentMetadata.risk_level.in_(["High", "Medium"])
-    ).scalar() or 0
+    active_flags = (
+        db.query(func.count(DocumentMetadata.id))
+        .filter(DocumentMetadata.risk_level.in_(["High", "Medium"]))
+        .scalar()
+        or 0
+    )
     if total_docs > 0:
         integrity_score = round((1 - (active_flags / total_docs)) * 100, 1)
     else:
@@ -136,40 +169,54 @@ def get_analytics_summary(db: Session = Depends(get_db)):
     return {
         "vectorizedNodes": vectorized_nodes,
         "activeFlags": active_flags,
-        "complianceIntegrity": f"{integrity_score}%"
+        "complianceIntegrity": f"{integrity_score}%",
     }
+
 
 @app.get("/api/compliance/alerts")
 def get_compliance_alerts(db: Session = Depends(get_db)):
     """Fetches AI-flagged compliance violations."""
     try:
-        flagged_docs = db.query(DocumentMetadata).filter(
-            DocumentMetadata.risk_level.in_(["High", "Medium"])
-        ).order_by(DocumentMetadata.upload_date.desc()).all()
+        flagged_docs = (
+            db.query(DocumentMetadata)
+            .filter(DocumentMetadata.risk_level.in_(["High", "Medium"]))
+            .order_by(DocumentMetadata.upload_date.desc())
+            .all()
+        )
         alerts = []
         for doc in flagged_docs:
-            alerts.append({
-                "id": doc.id,
-                "doc": doc.filename,
-                "type": f"{doc.risk_level} Risk Rule Violation",
-                "risk": doc.risk_level,
-                "desc": doc.risk_description
-            })
+            alerts.append(
+                {
+                    "id": doc.id,
+                    "doc": doc.filename,
+                    "type": f"{doc.risk_level} Risk Rule Violation",
+                    "risk": doc.risk_level,
+                    "desc": doc.risk_description,
+                }
+            )
         if not alerts:
-            return [{
-                "id": 0,
-                "doc": "System Stable",
-                "type": "Operational Stability",
-                "risk": "None",
-                "desc": "No active vulnerabilities flagged across repository nodes."
-            }]
+            return [
+                {
+                    "id": 0,
+                    "doc": "System Stable",
+                    "type": "Operational Stability",
+                    "risk": "None",
+                    "desc": "No active vulnerabilities flagged across repository nodes.",
+                }
+            ]
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/documents")
 @app.post("/api/documents")
-def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def list_uploaded_documents(
+    skip: int = 0,
+    limit: int = 5,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     """
     Returns a paginated slice of documents.
     NOTE: Auto-pruning has been REMOVED because Render uses an ephemeral filesystem.
@@ -178,12 +225,17 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
     """
     base_query = db.query(DocumentMetadata)
     if current_user["role"] != "admin":
-        base_query = base_query.filter(DocumentMetadata.access_level.in_(["Public", "Internal"]))
-        
+        base_query = base_query.filter(
+            DocumentMetadata.access_level.in_(["Public", "Internal"])
+        )
+
     total_count = base_query.count()
-    documents = base_query.order_by(
-        DocumentMetadata.upload_date.desc()
-    ).offset(skip).limit(limit).all()
+    documents = (
+        base_query.order_by(DocumentMetadata.upload_date.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
     return {
         "total": total_count,
@@ -202,8 +254,9 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
                 "risk_description": d.risk_description,
             }
             for d in documents
-        ]
+        ],
     }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ADMIN-ONLY ENDPOINTS
@@ -212,8 +265,10 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
 import threading
 
 # Limit concurrent processing to prevent Render Free Tier Out-Of-Memory (OOM 512MB limit)
-_ai_semaphore = threading.Semaphore(2)
-_vector_semaphore = threading.Semaphore(2)
+# 1 at a time prevents two heavy LLM+embedding calls competing for the same 512MB heap.
+_ai_semaphore = threading.Semaphore(1)
+_vector_semaphore = threading.Semaphore(1)
+
 
 def _run_vector_injection(parsed_text: str, filename: str, access_level: str):
     """Phase 2: Vector injection runs AFTER badge is updated (non-blocking)."""
@@ -235,12 +290,14 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
             file_path = os.path.join(UPLOAD_DIR, filename)
             parsed_text = extract_text_from_file(file_path)
             char_count = len(parsed_text)
-    
+
             analysis_result = analyze_document(parsed_text, filename)
 
         db = SessionLocal()
         try:
-            doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            doc = (
+                db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            )
             if doc:
                 doc.char_count = char_count
                 doc.extracted_text = parsed_text[:50000]
@@ -250,7 +307,9 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
                 doc.doc_type = analysis_result.get("doc_type", "Unknown")
                 doc.summary = analysis_result.get("summary", "")
                 db.commit()
-                print(f"[BG] Badge updated for '{filename}': {analysis_result['risk_level']}")
+                print(
+                    f"[BG] Badge updated for '{filename}': {analysis_result['risk_level']}"
+                )
         finally:
             db.close()
 
@@ -258,16 +317,19 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
         threading.Thread(
             target=_run_vector_injection,
             args=(parsed_text, filename, access_level),
-            daemon=True
+            daemon=True,
         ).start()
 
     except Exception as e:
         import traceback
+
         err_msg = traceback.format_exc()
         print(f"[BG] Background AI task failed for '{filename}': {e}")
         db = SessionLocal()
         try:
-            doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            doc = (
+                db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            )
             if doc:
                 doc.risk_level = "Error"
                 doc.risk_description = "System Error during background processing."
@@ -286,19 +348,21 @@ async def upload_document(
     force: bool = Form(False),
     access_level: str = Form("Internal"),
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin)  # 🔒 ADMIN ONLY
+    _admin: dict = Depends(require_admin),  # 🔒 ADMIN ONLY
 ):
     try:
         content = await file.read()
 
         # ── 1. Check for filename conflicts ──
-        existing_by_name = db.query(DocumentMetadata).filter(
-            DocumentMetadata.filename == file.filename
-        ).first()
+        existing_by_name = (
+            db.query(DocumentMetadata)
+            .filter(DocumentMetadata.filename == file.filename)
+            .first()
+        )
         if existing_by_name:
             raise HTTPException(
                 status_code=409,
-                detail=f"A file with the name '{file.filename}' already exists in the system."
+                detail=f"A file with the name '{file.filename}' already exists in the system.",
             )
 
         # ── 2. Save to disk ──
@@ -308,10 +372,12 @@ async def upload_document(
 
         # ── 3. Fast Duplicate Detection (Raw File Hash) ──
         file_hash = hashlib.sha256(content).hexdigest()
-        existing_by_hash = db.query(DocumentMetadata).filter(
-            DocumentMetadata.content_hash == file_hash
-        ).first()
-        
+        existing_by_hash = (
+            db.query(DocumentMetadata)
+            .filter(DocumentMetadata.content_hash == file_hash)
+            .first()
+        )
+
         if existing_by_hash:
             if not force:
                 os.remove(file_path)
@@ -320,8 +386,8 @@ async def upload_document(
                     detail={
                         "type": "similar_content",
                         "existing_filename": existing_by_hash.filename,
-                        "message": f"This file contains the same data as '{existing_by_hash.filename}'."
-                    }
+                        "message": f"This file contains the same data as '{existing_by_hash.filename}'.",
+                    },
                 )
 
         # ── 4. Fix Content-Type ──
@@ -336,19 +402,21 @@ async def upload_document(
             filename=file.filename,
             content_type=actual_content_type,
             char_count=0,
-            extracted_text="",   
+            extracted_text="",
             risk_level="Scanning...",
             risk_description="AI compliance scan in progress.",
             content_hash=file_hash,
             access_level=access_level,
-            raw_file_data=content
+            raw_file_data=content,
         )
         db.add(db_record)
         db.commit()
         db.refresh(db_record)
 
         # ── 6. Offload ALL slow work (text extraction + AI) to background thread ──
-        background_tasks.add_task(_run_ai_background, db_record.id, file.filename, access_level)
+        background_tasks.add_task(
+            _run_ai_background, db_record.id, file.filename, access_level
+        )
 
         # ── 7. Return immediately ──
         return {
@@ -356,7 +424,7 @@ async def upload_document(
             "filename": db_record.filename,
             "characterCount": 0,
             "previewText": "",
-            "message": "File saved. AI compliance scan running in background."
+            "message": "File saved. AI compliance scan running in background.",
         }
 
     except HTTPException:
@@ -366,58 +434,79 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @app.get("/api/documents/{doc_id}/text")
 @app.post("/api/documents/{doc_id}/text")
-def get_document_text(doc_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_document_text(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     """Returns the stored extracted text for a document (for the View modal)."""
     doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
     if current_user["role"] != "admin" and doc.access_level == "Confidential":
-        raise HTTPException(status_code=403, detail="Access denied. Confidential document.")
+        raise HTTPException(
+            status_code=403, detail="Access denied. Confidential document."
+        )
     return {
         "id": doc.id,
         "filename": doc.filename,
         "char_count": doc.char_count,
         "risk_level": doc.risk_level,
         "risk_description": doc.risk_description,
-        "extracted_text": doc.extracted_text or "No text content available for this file.",
+        "extracted_text": doc.extracted_text
+        or "No text content available for this file.",
     }
+
 
 @app.get("/api/documents/{doc_id}/file")
 @app.post("/api/documents/{doc_id}/file")
-def get_document_file(doc_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_document_file(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     """Returns the physical file for native viewing (PDF/Images)."""
     doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
     if current_user["role"] != "admin" and doc.access_level == "Confidential":
-        raise HTTPException(status_code=403, detail="Access denied. Confidential document.")
+        raise HTTPException(
+            status_code=403, detail="Access denied. Confidential document."
+        )
     # Return from database if available (this survives Render restarts)
     if getattr(doc, "raw_file_data", None) is not None:
         headers = {}
         if doc.content_type == "application/pdf":
             headers["Content-Disposition"] = f'inline; filename="{doc.filename}"'
-        return Response(content=doc.raw_file_data, media_type=doc.content_type, headers=headers)
-        
+        return Response(
+            content=doc.raw_file_data, media_type=doc.content_type, headers=headers
+        )
+
     # Fallback to local disk (might be wiped by Render, but keep just in case)
     file_path = os.path.join(UPLOAD_DIR, doc.filename)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Physical file missing from disk and no backup in database.")
-    
+        raise HTTPException(
+            status_code=404,
+            detail="Physical file missing from disk and no backup in database.",
+        )
+
     headers = {}
     if doc.content_type == "application/pdf":
         headers["Content-Disposition"] = f'inline; filename="{doc.filename}"'
-        
-    return FileResponse(file_path, media_type=doc.content_type, filename=doc.filename, headers=headers)
+
+    return FileResponse(
+        file_path, media_type=doc.content_type, filename=doc.filename, headers=headers
+    )
+
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(
     doc_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin)  # 🔒 ADMIN ONLY
+    _admin: dict = Depends(require_admin),  # 🔒 ADMIN ONLY
 ):
     """Deletes a document record from DB, disk, and vector store."""
     doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
@@ -427,6 +516,7 @@ def delete_document(
     # 1. Remove from vector store (in background to make UI instant)
     try:
         from rag_engine import delete_document_from_vector_store
+
         background_tasks.add_task(delete_document_from_vector_store, doc.filename)
     except Exception:
         pass
@@ -441,8 +531,10 @@ def delete_document(
     db.commit()
     return {"status": "Deleted", "filename": doc.filename}
 
+
 class UpdateDocumentRequest(BaseModel):
     text: str
+
 
 @app.put("/api/documents/{doc_id}/text")
 async def update_document_text(
@@ -450,53 +542,74 @@ async def update_document_text(
     payload: UpdateDocumentRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin)
+    _admin: dict = Depends(require_admin),
 ):
     doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-    
+
     # 1. Update text and reset risk status
     doc.extracted_text = payload.text
     doc.char_count = len(payload.text)
     doc.risk_level = "Scanning..."
     doc.risk_description = "AI compliance scan in progress after text edit."
-    
+
     # Optional: Update content_hash based on new text
-    hash_material = payload.text.encode('utf-8')
+    hash_material = payload.text.encode("utf-8")
     doc.content_hash = hashlib.sha256(hash_material).hexdigest()
-    
+
     db.commit()
-    
+
     # 2. Re-run AI indexing background task
-    background_tasks.add_task(_run_ai_background, doc.id, payload.text, doc.filename)
-    
+    background_tasks.add_task(
+        _run_ai_background, doc.id, doc.filename, doc.access_level or "Internal"
+    )
+
     return {"status": "Success", "message": "Document text updated. Re-scanning."}
 
+
 @app.post("/api/admin/import")
-def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depends(get_db), _admin: dict = Depends(require_admin)):
+def import_missing_files(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _admin: dict = Depends(require_admin),
+):
     existing_docs = db.query(DocumentMetadata).all()
     existing_filenames = {d.filename for d in existing_docs}
-    
+
     try:
-        from rag_engine import get_vector_db
-        # Get all synced sources from PGVector using SQL filter
-        vdb = get_vector_db()
-        results = vdb.similarity_search(".", k=10000)  # fetch all
-        synced_sources = set(d.metadata.get("source") for d in results if d.metadata.get("source"))
+        # Query distinct source filenames directly from PGVector's metadata table.
+        # This avoids loading thousands of embedding rows into Python memory.
+        from database import engine as db_engine
+        from sqlalchemy import text as sql_text
+
+        with db_engine.connect() as conn:
+            result = conn.execute(
+                sql_text(
+                    "SELECT DISTINCT cmetadata->>'source' "
+                    "FROM langchain_pg_embedding "
+                    "WHERE collection_id = ("
+                    "  SELECT uuid FROM langchain_pg_collection "
+                    "  WHERE name = 'ccl_docintel_vectors'"
+                    ")"
+                )
+            )
+            synced_sources = {row[0] for row in result if row[0]}
     except Exception:
         synced_sources = set()
 
     files_on_disk = os.listdir(UPLOAD_DIR) if os.path.exists(UPLOAD_DIR) else []
     imported = 0
-    
+
     # Rescan files that are in Postgres but failed scanning previously
     for doc in existing_docs:
         if "Scanner failed" in (doc.risk_description or ""):
             doc.risk_level = "Scanning..."
             doc.risk_description = "AI compliance scan in progress."
             db.commit()
-            background_tasks.add_task(_run_ai_background, doc.id, doc.extracted_text or "", doc.filename)
+            background_tasks.add_task(
+                _run_ai_background, doc.id, doc.filename, doc.access_level or "Internal"
+            )
             imported += 1
 
     for filename in files_on_disk:
@@ -504,24 +617,35 @@ def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depend
             file_path = os.path.join(UPLOAD_DIR, filename)
             parsed_text = extract_text_from_file(file_path)
             char_count = len(parsed_text)
-            
-            clean_text = re.sub(r'\[Image Metadata\].*?(?=\n\[|$)', '', parsed_text, flags=re.DOTALL)
-            clean_text = re.sub(r'\[EXIF Data\].*?(?=\n\[|$)', '', clean_text, flags=re.DOTALL)
-            clean_text = re.sub(r'\[OCR Error\].*?(?=\n\[|$)', '', clean_text, flags=re.DOTALL)
+
+            clean_text = re.sub(
+                r"\[Image Metadata\].*?(?=\n\[|$)", "", parsed_text, flags=re.DOTALL
+            )
+            clean_text = re.sub(
+                r"\[EXIF Data\].*?(?=\n\[|$)", "", clean_text, flags=re.DOTALL
+            )
+            clean_text = re.sub(
+                r"\[OCR Error\].*?(?=\n\[|$)", "", clean_text, flags=re.DOTALL
+            )
             clean_text = clean_text.strip().lower()
-            
+
             if clean_text:
-                hash_material = clean_text.encode('utf-8')
+                hash_material = clean_text.encode("utf-8")
             else:
                 try:
                     from PIL import Image as PilImage
-                    img = PilImage.open(file_path).convert("RGB").resize((32, 32), PilImage.Resampling.LANCZOS)
+
+                    img = (
+                        PilImage.open(file_path)
+                        .convert("RGB")
+                        .resize((32, 32), PilImage.Resampling.LANCZOS)
+                    )
                     hash_material = img.tobytes()
                 except Exception:
                     with open(file_path, "rb") as f:
                         hash_material = f.read()
             file_hash = hashlib.sha256(hash_material).hexdigest()
-            
+
             if filename not in existing_filenames:
                 db_record = DocumentMetadata(
                     filename=filename,
@@ -530,25 +654,35 @@ def import_missing_files(background_tasks: BackgroundTasks, db: Session = Depend
                     extracted_text=parsed_text[:50000],
                     risk_level="Scanning...",
                     risk_description="AI compliance scan in progress.",
-                    content_hash=file_hash
+                    content_hash=file_hash,
                 )
                 db.add(db_record)
                 db.commit()
                 doc_id = db_record.id
             else:
-                doc = db.query(DocumentMetadata).filter(DocumentMetadata.filename == filename).first()
+                doc = (
+                    db.query(DocumentMetadata)
+                    .filter(DocumentMetadata.filename == filename)
+                    .first()
+                )
                 doc.risk_level = "Scanning..."
                 doc.risk_description = "AI compliance scan in progress."
                 doc.extracted_text = parsed_text[:50000]
                 db.commit()
                 doc_id = doc.id
-            
-            background_tasks.add_task(_run_ai_background, doc_id, parsed_text, filename)
+
+            background_tasks.add_task(_run_ai_background, doc_id, filename)
             imported += 1
-            
-    return {"status": "Success", "imported": imported, "message": "Missing files are being imported in the background."}
+
+    return {
+        "status": "Success",
+        "imported": imported,
+        "message": "Missing files are being imported in the background.",
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

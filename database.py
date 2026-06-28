@@ -1,11 +1,21 @@
-import os
 import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, LargeBinary
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+import os
 
-# Load key-value properties out of our secured .env file 
+from dotenv import load_dotenv
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    create_engine,
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import deferred, sessionmaker
+
+# Load key-value properties out of our secured .env file
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -13,24 +23,34 @@ if not DATABASE_URL:
     print("WARNING: DATABASE_URL is not set. Using temporary sqlite database.")
     DATABASE_URL = "sqlite:///./sql_app.db"
 # Connect to cloud PostgreSQL server (Neon)
-connect_args = {"sslmode": "require"} if DATABASE_URL.startswith("postgres") else {"check_same_thread": False}
+connect_args = (
+    {"sslmode": "require"}
+    if DATABASE_URL.startswith("postgres")
+    else {"check_same_thread": False}
+)
 engine = create_engine(
     DATABASE_URL,
     connect_args=connect_args,
-    pool_pre_ping=True,   # detect stale connections automatically
+    pool_pre_ping=True,  # detect stale connections automatically
+    pool_size=3,  # limit concurrent DB connections on Render free tier
+    max_overflow=2,  # allow up to 2 extra connections under burst load
+    pool_recycle=300,  # recycle connections every 5 min to avoid Neon timeouts
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
 class DocumentMetadata(Base):
     __tablename__ = "documents"
 
-    id           = Column(Integer, primary_key=True, index=True)
-    filename     = Column(String, unique=True, index=True)
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, unique=True, index=True)
     content_type = Column(String)
-    char_count   = Column(Integer)
-    extracted_text = Column(Text, nullable=True)   # full extracted content
-    upload_date  = Column(DateTime, default=datetime.datetime.utcnow)
+    char_count = Column(Integer)
+    extracted_text = deferred(
+        Column(Text, nullable=True)
+    )  # lazy-loaded: not fetched in list queries
+    upload_date = Column(DateTime, default=datetime.datetime.utcnow)
     risk_level = Column(String, default="None")
     risk_description = Column(String, default="Pending scan.")
     content_hash = Column(String, nullable=True, index=True)
@@ -38,20 +58,25 @@ class DocumentMetadata(Base):
     department = Column(String, nullable=True)
     doc_type = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
-    raw_file_data = Column(LargeBinary, nullable=True)
+    raw_file_data = deferred(
+        Column(LargeBinary, nullable=True)
+    )  # lazy-loaded: binary never fetched unless explicitly accessed
+
 
 class User(Base):
     __tablename__ = "users"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    username        = Column(String, unique=True, index=True, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    role            = Column(String, default="viewer")  # 'admin' | 'viewer'
-    is_active       = Column(Boolean, default=True)
-    created_at      = Column(DateTime, default=datetime.datetime.utcnow)
+    role = Column(String, default="viewer")  # 'admin' | 'viewer'
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+
 
 def get_db():
     db = SessionLocal()

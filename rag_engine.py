@@ -3,6 +3,7 @@
 # time they are actually needed.  This lets Uvicorn bind its port in < 1 s.
 import os
 import re
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,10 +15,12 @@ _llm = None
 _mistral_llm = None
 _text_splitter = None
 
+
 def get_embedding_engine():
     global _embedding_engine
     if _embedding_engine is None:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
         class PatchedEmbeddings(GoogleGenerativeAIEmbeddings):
             def embed_documents(self, texts: list[str]) -> list[list[float]]:
                 # Fix LangChain list index out of range bug for batch embeddings
@@ -25,9 +28,10 @@ def get_embedding_engine():
 
         _embedding_engine = PatchedEmbeddings(
             model="models/gemini-embedding-001",  # stable, available on all free tier keys
-            google_api_key=os.getenv("GEMINI_API_KEY", "")
+            google_api_key=os.getenv("GEMINI_API_KEY", ""),
         )
     return _embedding_engine
+
 
 def get_vector_db():
     """
@@ -37,12 +41,17 @@ def get_vector_db():
     global _vector_db
     if _vector_db is None:
         from langchain_postgres.vectorstores import PGVector
+
         connection_string = os.getenv("DATABASE_URL", "")
         # langchain-postgres requires postgresql:// scheme (not postgres://)
         if connection_string.startswith("postgres://"):
-            connection_string = connection_string.replace("postgres://", "postgresql+psycopg://", 1)
+            connection_string = connection_string.replace(
+                "postgres://", "postgresql+psycopg://", 1
+            )
         elif connection_string.startswith("postgresql://"):
-            connection_string = connection_string.replace("postgresql://", "postgresql+psycopg://", 1)
+            connection_string = connection_string.replace(
+                "postgresql://", "postgresql+psycopg://", 1
+            )
         _vector_db = PGVector(
             embeddings=get_embedding_engine(),
             collection_name="ccl_docintel_vectors",
@@ -51,11 +60,13 @@ def get_vector_db():
         )
     return _vector_db
 
+
 def get_llm():
     """Lazy-initialize Gemini 2.5 Flash as primary LLM."""
     global _llm
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
+
         _llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
@@ -63,17 +74,20 @@ def get_llm():
         )
     return _llm
 
+
 def get_mistral_llm():
     """Lazy-initialize Mistral Small as fallback LLM (500M tokens/month free tier)."""
     global _mistral_llm
     if _mistral_llm is None:
         from langchain_mistralai import ChatMistralAI
+
         _mistral_llm = ChatMistralAI(
             model="mistral-small-latest",
             api_key=os.getenv("MISTRAL_API_KEY", ""),
             temperature=0.2,
         )
     return _mistral_llm
+
 
 def invoke_llm(prompt: str) -> str:
     """
@@ -82,6 +96,7 @@ def invoke_llm(prompt: str) -> str:
     This ensures scanning always works even when Gemini quota is exhausted.
     """
     import time
+
     # ── Try Gemini first (with 1 retry) ───────────────────────────────────
     for attempt in range(2):
         try:
@@ -89,21 +104,31 @@ def invoke_llm(prompt: str) -> str:
             return response.content
         except Exception as e:
             err_str = str(e)
-            is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str
+            is_rate_limit = (
+                "429" in err_str
+                or "RESOURCE_EXHAUSTED" in err_str
+                or "Quota exceeded" in err_str
+            )
             if is_rate_limit:
                 if attempt == 0:
                     print("[LLM] Gemini rate-limited, retrying in 10s...")
                     time.sleep(10)
                     continue
-                print("[LLM] Gemini quota exhausted after retry. Falling back to Mistral AI...")
+                print(
+                    "[LLM] Gemini quota exhausted after retry. Falling back to Mistral AI..."
+                )
             else:
-                print(f"[LLM] Gemini error (non-rate-limit): {err_str[:200]}. Falling back to Mistral...")
+                print(
+                    f"[LLM] Gemini error (non-rate-limit): {err_str[:200]}. Falling back to Mistral..."
+                )
             break  # exit Gemini loop, try Mistral
 
     # ── Fallback: Mistral AI ───────────────────────────────────────────────
     mistral_key = os.getenv("MISTRAL_API_KEY", "")
     if not mistral_key:
-        raise RuntimeError("Gemini quota exceeded and MISTRAL_API_KEY is not set on the server.")
+        raise RuntimeError(
+            "Gemini quota exceeded and MISTRAL_API_KEY is not set on the server."
+        )
     try:
         response = get_mistral_llm().invoke(prompt)
         print("[LLM] Mistral fallback succeeded.")
@@ -117,13 +142,15 @@ def get_text_splitter():
     global _text_splitter
     if _text_splitter is None:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
+
         _text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
             chunk_overlap=100,
             separators=["\n\n", "\n", ".", " "],
-            length_function=len
+            length_function=len,
         )
     return _text_splitter
+
 
 def warm_up():
     get_vector_db()
@@ -142,7 +169,9 @@ def delete_document_from_vector_store(filename: str):
         print(f"[DEDUP WARN] Could not remove old chunks: {del_err}")
 
 
-def inject_text_into_vector_store(raw_text: str, filename: str, access_level: str = "Internal") -> bool:
+def inject_text_into_vector_store(
+    raw_text: str, filename: str, access_level: str = "Internal"
+) -> bool:
     """
     Indexes document text into PGVector (persistent Neon PostgreSQL).
     Deletes any previously stored chunks for this filename first,
@@ -158,7 +187,9 @@ def inject_text_into_vector_store(raw_text: str, filename: str, access_level: st
         chunks = get_text_splitter().split_text(raw_text)
         if not chunks:
             return False
-        metadata_tags = [{"source": filename, "access_level": access_level} for _ in chunks]
+        metadata_tags = [
+            {"source": filename, "access_level": access_level} for _ in chunks
+        ]
         get_vector_db().add_texts(texts=chunks, metadatas=metadata_tags)
         print(f"[VECTOR INDEXED] Committed {len(chunks)} chunks for '{filename}'")
         return True
@@ -173,7 +204,7 @@ def _normalize_number_query(query: str) -> list[str]:
     Generate number-format variants for a query containing digits.
     e.g. '50000' → ['50,000', 'Rs. 50,000', 'Rs. 50,000 /-', '₹50,000', ...]
     """
-    raw_numbers = re.findall(r'\d+', query.replace(',', ''))
+    raw_numbers = re.findall(r"\d+", query.replace(",", ""))
     variants = []
     for num_str in raw_numbers:
         n = int(num_str)
@@ -203,7 +234,7 @@ def _get_all_chunks_from_db(filter_criteria=None) -> list:
     try:
         vdb = get_vector_db()
         # Use a max-fetch similarity search with a neutral query
-        kwargs = {"k": 3000}
+        kwargs = {"k": 500}  # capped to prevent OOM on Render 512MB free tier
         if filter_criteria:
             # Convert Chroma-style filter to PGVector filter format
             access_filter = filter_criteria.get("access_level", {}).get("$in")
@@ -225,9 +256,9 @@ def _keyword_scan_all(query: str, top_n: int = 6, filter_criteria=None) -> list:
     if not all_chunks:
         return []
 
-    raw_tokens     = set(query.lower().split())
+    raw_tokens = set(query.lower().split())
     number_variants = set(v.lower() for v in _normalize_number_query(query))
-    tokens         = raw_tokens | number_variants
+    tokens = raw_tokens | number_variants
 
     scored = []
     for chunk in all_chunks:
@@ -241,7 +272,9 @@ def _keyword_scan_all(query: str, top_n: int = 6, filter_criteria=None) -> list:
 
 
 # ── 4. Core Query Pipeline ────────────────────────────────────────────────────
-def query_document_intelligence(user_question: str, history: list[dict] = None, user_role: str = "viewer") -> str:
+def query_document_intelligence(
+    user_question: str, history: list[dict] = None, user_role: str = "viewer"
+) -> str:
     """
     Hybrid retrieval RAG pipeline with:
       - Semantic search (k=8) + full keyword scan for exact term matching
@@ -260,14 +293,18 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
             search_filter = {"access_level": {"$in": ["Public", "Internal"]}}
 
         # ── Step A: Semantic search ───────────────────────────────────────
-        semantic_docs = get_vector_db().similarity_search(user_question, k=8, filter=search_filter)
+        semantic_docs = get_vector_db().similarity_search(
+            user_question, k=8, filter=search_filter
+        )
 
         # ── Step B: Full keyword scan (always runs, scale-guarded) ────────
-        keyword_docs = _keyword_scan_all(user_question, top_n=6, filter_criteria=search_filter)
+        keyword_docs = _keyword_scan_all(
+            user_question, top_n=6, filter_criteria=search_filter
+        )
 
         # ── Step C: Merge — keyword results first (higher precision) ──────
         seen, merged = set(), []
-        for doc in (keyword_docs + semantic_docs):
+        for doc in keyword_docs + semantic_docs:
             key = doc.page_content[:120].strip()
             if key not in seen:
                 seen.add(key)
@@ -294,8 +331,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
 
         # ── Step F: Construct system prompt ──────────────────────────────
         history_section = (
-            f"\n--- CONVERSATION HISTORY ---\n{history_text}\n"
-            if history_text else ""
+            f"\n--- CONVERSATION HISTORY ---\n{history_text}\n" if history_text else ""
         )
 
         system_instruction = (
@@ -317,7 +353,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
             return invoke_llm(system_instruction)
         except RuntimeError as e:
             return f"⚠️ {str(e)}"
-                
+
     except Exception as e:
         return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {str(e)}"
 
@@ -329,11 +365,11 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
     """
     if not extracted_text:
         return {
-            "risk_level": "None", 
-            "description": "No text extracted.", 
-            "department": "Unknown", 
-            "doc_type": "Unknown", 
-            "summary": "No text extracted."
+            "risk_level": "None",
+            "description": "No text extracted.",
+            "department": "Unknown",
+            "doc_type": "Unknown",
+            "summary": "No text extracted.",
         }
 
     try:
@@ -365,25 +401,27 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 "description": str(e),
                 "department": "Unknown",
                 "doc_type": "Unknown",
-                "summary": "Scan failed."
+                "summary": "Scan failed.",
             }
 
         content = content.replace("*", "").replace("`", "")
-        
+
         result = {
             "risk_level": "None",
             "description": "All clear.",
             "department": "Unknown",
             "doc_type": "Unknown",
-            "summary": "No summary available."
+            "summary": "No summary available.",
         }
-        
-        for line in content.split('\n'):
+
+        for line in content.split("\n"):
             line = line.strip()
             if line.upper().startswith("RISK:"):
                 risk = line[5:].strip().title()
-                if "High" in risk: result["risk_level"] = "High"
-                elif "Medium" in risk: result["risk_level"] = "Medium"
+                if "High" in risk:
+                    result["risk_level"] = "High"
+                elif "Medium" in risk:
+                    result["risk_level"] = "Medium"
             elif line.upper().startswith("REASON:"):
                 result["description"] = line[7:].strip()
             elif line.upper().startswith("DEPARTMENT:"):
@@ -392,15 +430,15 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 result["doc_type"] = line[5:].strip()
             elif line.upper().startswith("SUMMARY:"):
                 result["summary"] = line[8:].strip()
-                
+
         return result
 
     except Exception as e:
         err_str = str(e)
         return {
-            "risk_level": "Error", 
+            "risk_level": "Error",
             "description": f"Scanner failed: {err_str}",
-            "department": "Unknown", 
-            "doc_type": "Unknown", 
-            "summary": "Extraction failed due to an error."
+            "department": "Unknown",
+            "doc_type": "Unknown",
+            "summary": "Extraction failed due to an error.",
         }

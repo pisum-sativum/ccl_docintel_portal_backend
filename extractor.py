@@ -1,29 +1,36 @@
 import os
+
 import chardet
 import pandas as pd
-from pypdf import PdfReader
-from docx import Document
 from bs4 import BeautifulSoup
+from docx import Document
+from pypdf import PdfReader
 
 # ── Optional imports (gracefully degrade if not installed) ──────────────────
 try:
     from pptx import Presentation as PptxPresentation
+
     _PPTX_AVAILABLE = True
 except ImportError:
     _PPTX_AVAILABLE = False
 
 try:
     from striprtf.striprtf import rtf_to_text
+
     _RTF_AVAILABLE = True
 except ImportError:
     _RTF_AVAILABLE = False
 
 try:
+    import sys
+
     import pytesseract
     from PIL import Image as PilImage
-    import sys
+
     if sys.platform == "win32":
-        pytesseract.pytesseract.tesseract_cmd = r"C:\Users\KIIT0001\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+        pytesseract.pytesseract.tesseract_cmd = (
+            r"C:\Users\KIIT0001\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+        )
     _OCR_AVAILABLE = True
 except ImportError:
     _OCR_AVAILABLE = False
@@ -31,25 +38,52 @@ except ImportError:
 try:
     from PIL import Image as PilImage
     from PIL.ExifTags import TAGS
+
     _PIL_AVAILABLE = True
 except ImportError:
     _PIL_AVAILABLE = False
 
 # ── File-type groups ────────────────────────────────────────────────────────
-IMAGE_EXTS      = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".gif", ".webp"}
-PPTX_EXTS       = {".pptx", ".ppt"}
-SPREADSHEET_EXTS= {".xlsx", ".xls", ".csv"}
-WORD_EXTS       = {".docx", ".doc"}
-HTML_EXTS       = {".html", ".htm"}
-XML_EXTS        = {".xml"}
-RTF_EXTS        = {".rtf"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".gif", ".webp"}
+PPTX_EXTS = {".pptx", ".ppt"}
+SPREADSHEET_EXTS = {".xlsx", ".xls", ".csv"}
+WORD_EXTS = {".docx", ".doc"}
+HTML_EXTS = {".html", ".htm"}
+XML_EXTS = {".xml"}
+RTF_EXTS = {".rtf"}
 PLAIN_TEXT_EXTS = {
-    ".txt", ".log", ".json", ".md", ".markdown",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-    ".py",  ".js",  ".ts",  ".jsx", ".tsx", ".java",
-    ".c",   ".cpp", ".h",   ".cs",  ".go",  ".rs",
-    ".sh",  ".bat", ".ps1", ".sql", ".r",   ".rb",
-    ".env", ".gitignore", ".dockerfile",
+    ".txt",
+    ".log",
+    ".json",
+    ".md",
+    ".markdown",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".cs",
+    ".go",
+    ".rs",
+    ".sh",
+    ".bat",
+    ".ps1",
+    ".sql",
+    ".r",
+    ".rb",
+    ".env",
+    ".gitignore",
+    ".dockerfile",
 }
 
 
@@ -72,16 +106,23 @@ def _extract_image(file_path: str) -> str:
     if _OCR_AVAILABLE:
         try:
             img = PilImage.open(file_path)
-            
-            # Preprocessing for better OCR on UI screenshots / dark mode
-            # 1. Upscale by 2x for clearer small fonts
-            img = img.resize((img.width * 2, img.height * 2), PilImage.Resampling.LANCZOS)
-            # 2. Convert to grayscale
-            img = img.convert('L')
-            
+
+            # Cap dimensions before upscaling to prevent OOM on large images.
+            # A 4K image upscaled 2x would consume ~300MB of RAM on a 512MB host.
+            MAX_SIDE = 2000
+            if img.width > MAX_SIDE or img.height > MAX_SIDE:
+                img.thumbnail((MAX_SIDE, MAX_SIDE), PilImage.Resampling.LANCZOS)
+
+            # Upscale by 2x for clearer small fonts (safe now that we capped above)
+            img = img.resize(
+                (img.width * 2, img.height * 2), PilImage.Resampling.LANCZOS
+            )
+            # Convert to grayscale
+            img = img.convert("L")
+
             # 3. Let Tesseract use default Page Segmentation Mode (PSM 3) which handles complex documents better
             ocr_text = pytesseract.image_to_string(img).strip()
-            
+
             if ocr_text:
                 parts.append(f"[OCR Text]\n{ocr_text}")
         except Exception as e:
@@ -156,7 +197,9 @@ def _try_as_text(file_path: str) -> str:
     try:
         text = _read_text_file(file_path)
         # Heuristic: if >30 % of chars are non-printable it's binary
-        non_printable = sum(1 for c in text if not c.isprintable() and c not in "\n\r\t")
+        non_printable = sum(
+            1 for c in text if not c.isprintable() and c not in "\n\r\t"
+        )
         if len(text) > 0 and non_printable / len(text) > 0.30:
             return f"[Binary File]: Content is not human-readable text (detected as binary)."
         return text
@@ -165,6 +208,7 @@ def _try_as_text(file_path: str) -> str:
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
+
 
 def extract_text_from_file(file_path: str) -> str:
     """
@@ -184,6 +228,7 @@ def extract_text_from_file(file_path: str) -> str:
         if ext == ".pdf":
             try:
                 import fitz
+
                 doc = fitz.open(file_path)
                 slices = []
                 for page in doc:
@@ -191,14 +236,18 @@ def extract_text_from_file(file_path: str) -> str:
                     if len(page_text.strip()) < 50 and _OCR_AVAILABLE:
                         # Likely a scanned page, fallback to OCR
                         pix = page.get_pixmap(dpi=150)
-                        img = PilImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        img = PilImage.frombytes(
+                            "RGB", [pix.width, pix.height], pix.samples
+                        )
                         page_text = pytesseract.image_to_string(img)
                     slices.append(page_text)
                 extracted_text = "\n".join(slices)
             except ImportError:
                 # Fallback if PyMuPDF isn't installed
                 reader = PdfReader(file_path)
-                slices = [p.extract_text(extraction_mode="layout") for p in reader.pages]
+                slices = [
+                    p.extract_text(extraction_mode="layout") for p in reader.pages
+                ]
                 slices = [s for s in slices if s]
                 extracted_text = "\n".join(slices)
 
@@ -234,7 +283,9 @@ def extract_text_from_file(file_path: str) -> str:
                 raw = _read_text_file(file_path)
                 extracted_text = rtf_to_text(raw)
             else:
-                extracted_text = "[RTF Error]: striprtf not installed. Run: pip install striprtf"
+                extracted_text = (
+                    "[RTF Error]: striprtf not installed. Run: pip install striprtf"
+                )
 
         # ── 8. Images (OCR + metadata) ────────────────────────────────────
         elif ext in IMAGE_EXTS:
@@ -250,7 +301,7 @@ def extract_text_from_file(file_path: str) -> str:
 
         # Sanitize for PostgreSQL: Remove null bytes (\x00)
         if isinstance(extracted_text, str):
-            extracted_text = extracted_text.replace('\x00', '')
+            extracted_text = extracted_text.replace("\x00", "")
 
         return extracted_text.strip()
 
