@@ -286,19 +286,23 @@ def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown
         )
 
         response = get_llm().invoke(compliance_prompt)
-        response_text = response.content.lower()
+        # Strip all markdown bold/italic characters to ensure clean matching
+        response_text = response.content.lower().replace("*", "").replace("`", "").replace('"', '').replace("'", "")
 
         # Parse the AI response fields
-        if "risk: high" in response_text:
+        if "risk: high" in response_text or "risk level: high" in response_text:
             risk = "High"
-        elif "risk: medium" in response_text:
+        elif "risk: medium" in response_text or "risk level: medium" in response_text:
             risk = "Medium"
         else:
             risk = "None"
 
         reason = "All standard compliance check metrics validated."
-        if "reason:" in response_text:
-            reason = response.content.split("REASON:")[-1].strip()
+        # Use regex to robustly find the reason part, ignoring markdown
+        import re
+        match = re.search(r'reason:\s*(.*)', response_text, re.IGNORECASE)
+        if match:
+            reason = match.group(1).strip()
 
         return {"risk_level": risk, "description": reason}
     except Exception as e:
@@ -329,7 +333,7 @@ def extract_document_metadata(text: str, filename: str) -> dict:
     
     try:
         response = get_llm().invoke(prompt)
-        content = response.content
+        content = response.content.replace("*", "").replace("`", "")
         dept = "Unknown"
         doc_type = "Unknown"
         summary = "No summary available."
