@@ -265,7 +265,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
 
         # ── Step G: Invoke Gemini with automatic retries for rate limits ──
         import time
-        max_attempts = 3
+        max_attempts = 2  # Fail fast
         for attempt in range(max_attempts):
             try:
                 response = get_llm().invoke(system_instruction)
@@ -274,7 +274,7 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
                     if attempt < max_attempts - 1:
-                        time.sleep(10)  # Wait 10 seconds and retry
+                        time.sleep(5)  # Short sleep
                         continue
                     return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
                 return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
@@ -318,8 +318,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
         )
 
         import time
-        import random
-        max_attempts = 4
+        max_attempts = 2  # Fail fast to avoid hanging the queue
         for attempt in range(max_attempts):
             try:
                 response = get_llm().invoke(prompt)
@@ -328,13 +327,12 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
                     if attempt < max_attempts - 1:
-                        # Add jitter to avoid thundering herd on concurrent uploads
-                        sleep_time = random.uniform(5.0, 15.0) * (attempt + 1)
-                        time.sleep(sleep_time)
+                        # Short sleep to recover from minor rate bumps, but don't hold the lock forever
+                        time.sleep(5)
                         continue
                     return {
                         "risk_level": "Error", 
-                        "description": "AI scan aborted. Google Gemini rate limit exceeded.",
+                        "description": "AI scan aborted. Google Gemini rate limit exceeded. Please wait a minute and retry.",
                         "department": "Unknown", 
                         "doc_type": "Unknown", 
                         "summary": "Scan failed (API limits)."
