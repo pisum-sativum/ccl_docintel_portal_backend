@@ -18,7 +18,7 @@ def get_embedding_engine():
     if _embedding_engine is None:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         _embedding_engine = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-001",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
     return _embedding_engine
