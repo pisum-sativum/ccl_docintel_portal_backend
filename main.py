@@ -209,24 +209,27 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
 # ADMIN-ONLY ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _run_vector_injection(parsed_text: str, filename: str, access_level: str):
+    """Phase 2: Vector injection runs AFTER badge is updated (non-blocking)."""
+    try:
+        inject_text_into_vector_store(parsed_text, filename, access_level)
+        print(f"[BG] Vector injection done for '{filename}'.")
+    except Exception as e:
+        print(f"[BG] Vector injection failed for '{filename}': {e}")
+
+
 def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal"):
     """
-    Runs the slow AI compliance scan and vector indexing in a background thread.
-    Updates the DB record when done so the dashboard reflects the final result.
+    Phase 1: Extract text + AI scan + update DB badge immediately.
+    Phase 2: Vector injection fires in its own thread so badge updates FAST.
     """
     try:
-        # 0. Extract text (moved from upload route to background)
         file_path = os.path.join(UPLOAD_DIR, filename)
         parsed_text = extract_text_from_file(file_path)
         char_count = len(parsed_text)
 
-        # 1. AI analysis — runs in parallel via invoke_llm() which has built-in Gemini→Mistral fallback
         analysis_result = analyze_document(parsed_text, filename)
-        
-        # 2. Vector store injection (CPU embedding, ~1-3 seconds)
-        inject_text_into_vector_store(parsed_text, filename, access_level)
 
-        # 3. Update the DB record with the final AI results and extracted text
         db = SessionLocal()
         try:
             doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
@@ -239,9 +242,17 @@ def _run_ai_background(doc_id: int, filename: str, access_level: str = "Internal
                 doc.doc_type = analysis_result.get("doc_type", "Unknown")
                 doc.summary = analysis_result.get("summary", "")
                 db.commit()
-                print(f"[BG] AI scan done for '{filename}': {analysis_result['risk_level']}")
+                print(f"[BG] Badge updated for '{filename}': {analysis_result['risk_level']}")
         finally:
             db.close()
+
+        # Phase 2: Vector injection in separate thread - does NOT block badge update
+        threading.Thread(
+            target=_run_vector_injection,
+            args=(parsed_text, filename, access_level),
+            daemon=True
+        ).start()
+
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
