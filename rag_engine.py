@@ -57,7 +57,7 @@ def get_llm():
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",  # 1500 req/day free tier — much faster than 2.5-flash
+            model="gemini-2.0-flash-lite",  # Separate quota pool, ultra-fast, 1500 req/day free
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
         )
@@ -314,7 +314,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
             f"DEPARTMENT: [department]\n"
             f"TYPE: [type]\n"
             f"SUMMARY: [summary]\n\n"
-            f"--- DOCUMENT TEXT ---\n{extracted_text[:4000]}"
+            f"--- DOCUMENT TEXT ---\n{extracted_text[:1500]}"  # Limit to 1500 chars to minimize token usage
         )
 
         import time
