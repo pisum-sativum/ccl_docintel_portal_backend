@@ -23,7 +23,7 @@ def get_embedding_engine():
                 return [self.embed_query(t) for t in texts]
 
         _embedding_engine = PatchedEmbeddings(
-            model="models/gemini-embedding-001",
+            model="models/text-embedding-004",
             google_api_key=os.getenv("GEMINI_API_KEY", "")
         )
     return _embedding_engine
@@ -57,7 +57,7 @@ def get_llm():
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",  # 1500 req/day free tier — much faster than 2.5-flash
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
         )
