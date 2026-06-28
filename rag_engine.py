@@ -216,15 +216,14 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
                 seen.add(key)
                 merged.append(doc)
 
-        if not merged:
-            return "I couldn't find any relevant text inside the uploaded compliance database to answer that question."
-
         # ── Step D: Build context with source labels ──────────────────────
         context_parts = []
         for doc in merged[:12]:
             src = doc.metadata.get("source", "Unknown Document")
             context_parts.append(f"[Source: {src}]\n{doc.page_content}")
         context_text = "\n\n---\n\n".join(context_parts)
+        if not context_text:
+            context_text = "[NO RELEVANT DOCUMENTS FOUND IN DATABASE. PLEASE PROVIDE A GENERAL ANSWER BASED ON YOUR KNOWLEDGE, BUT WARN THE USER NO SPECIFIC COMPLIANCE DOCUMENTS WERE FOUND.]"
 
         # ── Step E: Build conversation history string ─────────────────────
         history_text = ""
@@ -244,12 +243,11 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
 
         system_instruction = (
             "You are CCL DocIntel, an expert corporate AI compliance assistant.\n"
-            "Answer the user's question using ONLY the provided document context below.\n\n"
+            "Answer the user's question using the provided document context below.\n"
+            "If no context is provided, you may answer using your general knowledge but MUST clearly state that you couldn't find specific uploaded documents.\n\n"
             "IMPORTANT RULES:\n"
             "- Numbers may appear formatted differently: '50000', 'Rs. 50,000', '50,000/-', '₹50,000'. Treat them as equivalent.\n"
             "- Acronyms and proper nouns may differ in case (e.g. 'gssoc' matches 'GSSoC'). Match case-insensitively.\n"
-            "- ALWAYS cite the source document in your answer, e.g.: [Source: fee_letter.pdf]\n"
-            "- Use the conversation history (if provided) to understand follow-up questions.\n"
             "- If the answer truly cannot be found in the context, say: 'I cannot find that information in the current database.'\n"
             "- Do NOT make up facts.\n"
             f"{history_section}\n"
