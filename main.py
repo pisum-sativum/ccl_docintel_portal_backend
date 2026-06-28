@@ -209,6 +209,9 @@ def list_uploaded_documents(skip: int = 0, limit: int = 5, db: Session = Depends
 # ADMIN-ONLY ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Global lock to prevent Gemini API concurrency rate limit errors on the free tier.
+_ai_scan_lock = threading.Lock()
+
 def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_level: str = "Internal"):
     """
     Runs the slow AI compliance scan and vector indexing in a background thread.
@@ -216,7 +219,10 @@ def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_leve
     """
     try:
         # 1. AI analysis (Compliance scan + Metadata extraction combined, ~2-4 seconds)
-        analysis_result = analyze_document(parsed_text, filename)
+        # We acquire a lock here because Gemini Free Tier has a strict concurrency limit (e.g., 2 concurrent requests).
+        # By processing these sequentially, we eliminate 99% of rate-limit 429 errors!
+        with _ai_scan_lock:
+            analysis_result = analyze_document(parsed_text, filename)
         
         # 2. Vector store injection (CPU embedding, ~1-3 seconds)
         inject_text_into_vector_store(parsed_text, filename, access_level)

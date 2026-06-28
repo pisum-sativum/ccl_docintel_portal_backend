@@ -333,14 +333,14 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
                         time.sleep(sleep_time)
                         continue
                     return {
-                        "risk_level": "None", 
-                        "description": "AI scan delayed due to service rate limits.",
+                        "risk_level": "Error", 
+                        "description": "AI scan aborted. Google Gemini rate limit exceeded.",
                         "department": "Unknown", 
                         "doc_type": "Unknown", 
-                        "summary": "Extraction paused (rate limit)."
+                        "summary": "Scan failed (API limits)."
                     }
                 return {
-                    "risk_level": "None", 
+                    "risk_level": "Error", 
                     "description": f"Scanner failed: {err_str}",
                     "department": "Unknown", 
                     "doc_type": "Unknown", 
@@ -377,7 +377,7 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
     except Exception as e:
         err_str = str(e)
         return {
-            "risk_level": "None", 
+            "risk_level": "Error", 
             "description": f"Scanner failed: {err_str}",
             "department": "Unknown", 
             "doc_type": "Unknown", 
