@@ -274,95 +274,80 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
         return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
 
 
-# ── 5. Compliance Risk Scanner ────────────────────────────────────────────────
-def scan_text_for_compliance_risks(extracted_text: str, filename: str = "Unknown") -> dict:
+def analyze_document(extracted_text: str, filename: str) -> dict:
     """
-    Uses the Gemini LLM to scan extracted document text and filename for compliance risks.
-    Returns a dict with 'risk_level' (High/Medium/None) and 'description'.
+    Combines compliance scanning and metadata extraction into a single Gemini LLM call.
+    This cuts latency in half and prevents API rate limit exhaustion.
     """
-    if not extracted_text or extracted_text.startswith("[Parsing"):
-        return {"risk_level": "None", "description": "Unparsable file text layout."}
+    if not extracted_text:
+        return {
+            "risk_level": "None", 
+            "description": "No text extracted.", 
+            "department": "Unknown", 
+            "doc_type": "Unknown", 
+            "summary": "No text extracted."
+        }
 
     try:
-        # We instruct the AI to be highly lenient and only flag real issues
-        compliance_prompt = (
-            f"You are a strict cybersecurity and compliance AI agent. Review the following text "
-            f"and its filename ('{filename}') for extreme operational hazards, critical safety violations, "
-            f"exposed credentials, or explicit malicious behavior (like hacking scripts or security vulnerabilities).\n\n"
-            f"**CRITICAL INSTRUCTION: Be lenient on normal files! Do NOT raise unnecessary flags for minor administrative issues, "
-            f"standard maintenance reports, or benign text. Only flag things that are genuinely dangerous or malicious.**\n\n"
-            f"IMPORTANT: Normal business documents, manuals, standard guidelines, "
-            f"routine maintenance logs, standard contracts, or typical IT policies MUST be marked as 'None' risk. "
-            f"HOWEVER, if the document contains exposed passwords, hacking instructions, or states that it is a security issue, "
+        prompt = (
+            f"You are a strict cybersecurity and document analysis AI agent. Review the following text "
+            f"from '{filename}' and perform both a compliance scan and metadata extraction.\n\n"
+            f"**COMPLIANCE SCAN INSTRUCTIONS:**\n"
+            f"Be lenient on normal files! Do NOT flag minor administrative issues, normal guidelines, or benign text. "
+            f"HOWEVER, if the document contains exposed passwords, hacking instructions, or states it is a security issue, "
             f"you MUST mark it as 'High' or 'Medium' risk.\n\n"
-            f"Respond in exactly this format:\n"
+            f"**METADATA INSTRUCTIONS:**\n"
+            f"Extract the Department (HR, Legal, IT, etc), Type (Form, Policy, Memo, etc), and a concise 1-2 sentence Summary.\n\n"
+            f"Respond ONLY in this EXACT format (do not add markdown blocks):\n"
             f"RISK: [High, Medium, or None]\n"
-            f"REASON: [A short 1-sentence description of the hazard found]\n\n"
-            f"--- DOCUMENT TEXT ---\n{extracted_text[:4000]}"  # Scan the first 4000 characters
+            f"REASON: [A short 1-sentence description of the hazard, or 'All clear']\n"
+            f"DEPARTMENT: [department]\n"
+            f"TYPE: [type]\n"
+            f"SUMMARY: [summary]\n\n"
+            f"--- DOCUMENT TEXT ---\n{extracted_text[:4000]}"
         )
 
-        response = get_llm().invoke(compliance_prompt)
-        # Strip all markdown bold/italic characters to ensure clean matching
-        response_text = response.content.lower().replace("*", "").replace("`", "").replace('"', '').replace("'", "")
-
-        # Parse the AI response fields
-        if "risk: high" in response_text or "risk level: high" in response_text:
-            risk = "High"
-        elif "risk: medium" in response_text or "risk level: medium" in response_text:
-            risk = "Medium"
-        else:
-            risk = "None"
-
-        reason = "All standard compliance check metrics validated."
-        # Use regex to robustly find the reason part, ignoring markdown
-        import re
-        match = re.search(r'reason:\s*(.*)', response_text, re.IGNORECASE)
-        if match:
-            reason = match.group(1).strip()
-
-        return {"risk_level": risk, "description": reason}
-    except Exception as e:
-        err_str = str(e)
-        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-            return {"risk_level": "None", "description": "AI scan delayed due to service rate limits."}
-        return {"risk_level": "None", "description": f"Scanner failed to process document: {err_str}"}
-
-def extract_document_metadata(text: str, filename: str) -> dict:
-    """
-    Uses Gemini LLM to extract Department, Document Type, and a Summary.
-    """
-    if not text:
-        return {"department": "Unknown", "doc_type": "Unknown", "summary": "No text extracted."}
-        
-    prompt = (
-        f"You are a document metadata extraction engine. Read the following document ('{filename}') "
-        f"and extract three things:\n"
-        f"1. Department: (e.g. HR, Engineering, Legal, Safety, Finance, General)\n"
-        f"2. Type: (e.g. Form, Report, Guidelines, Policy, Memo, Unknown)\n"
-        f"3. Summary: (A concise 1-2 sentence summary of the document)\n\n"
-        f"Respond ONLY in this exact format:\n"
-        f"DEPARTMENT: [department]\n"
-        f"TYPE: [type]\n"
-        f"SUMMARY: [summary]\n\n"
-        f"--- DOCUMENT TEXT ---\n{text[:4000]}"
-    )
-    
-    try:
         response = get_llm().invoke(prompt)
         content = response.content.replace("*", "").replace("`", "")
-        dept = "Unknown"
-        doc_type = "Unknown"
-        summary = "No summary available."
+        
+        result = {
+            "risk_level": "None",
+            "description": "All clear.",
+            "department": "Unknown",
+            "doc_type": "Unknown",
+            "summary": "No summary available."
+        }
         
         for line in content.split('\n'):
             line = line.strip()
-            if line.startswith("DEPARTMENT:"):
-                dept = line.replace("DEPARTMENT:", "").strip()
-            elif line.startswith("TYPE:"):
-                doc_type = line.replace("TYPE:", "").strip()
-            elif line.startswith("SUMMARY:"):
-                summary = line.replace("SUMMARY:", "").strip()
+            if line.upper().startswith("RISK:"):
+                risk = line[5:].strip().title()
+                if "High" in risk: result["risk_level"] = "High"
+                elif "Medium" in risk: result["risk_level"] = "Medium"
+            elif line.upper().startswith("REASON:"):
+                result["description"] = line[7:].strip()
+            elif line.upper().startswith("DEPARTMENT:"):
+                result["department"] = line[11:].strip()
+            elif line.upper().startswith("TYPE:"):
+                result["doc_type"] = line[5:].strip()
+            elif line.upper().startswith("SUMMARY:"):
+                result["summary"] = line[8:].strip()
                 
-        return {"department": dept, "doc_type": doc_type, "summary": summary}
-    except Exception:
-        return {"department": "Unknown", "doc_type": "Unknown", "summary": "Extraction failed due to an error."}
+        return result
+    except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            return {
+                "risk_level": "None", 
+                "description": "AI scan delayed due to service rate limits.",
+                "department": "Unknown", 
+                "doc_type": "Unknown", 
+                "summary": "Extraction paused (rate limit)."
+            }
+        return {
+            "risk_level": "None", 
+            "description": f"Scanner failed: {err_str}",
+            "department": "Unknown", 
+            "doc_type": "Unknown", 
+            "summary": "Extraction failed due to an error."
+        }

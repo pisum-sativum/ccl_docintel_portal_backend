@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 # Import custom application modules
 from extractor import extract_text_from_file
 from database import init_db, get_db, DocumentMetadata, User, SessionLocal
-from rag_engine import inject_text_into_vector_store, query_document_intelligence, scan_text_for_compliance_risks, extract_document_metadata
+from rag_engine import (
+    analyze_document,
+    inject_text_into_vector_store,
+    query_document_intelligence,
+    delete_document_from_vector_store
+)
 from auth import (
     verify_password, create_access_token,
     get_current_user, require_admin
@@ -210,12 +215,9 @@ def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_leve
     Updates the DB record when done so the dashboard reflects the final result.
     """
     try:
-        # 1. AI compliance scan (Gemini API call, ~2-5 seconds)
-        audit_result = scan_text_for_compliance_risks(parsed_text, filename)
+        # 1. AI analysis (Compliance scan + Metadata extraction combined, ~2-4 seconds)
+        analysis_result = analyze_document(parsed_text, filename)
         
-        # 1.5 Extract metadata
-        metadata_result = extract_document_metadata(parsed_text, filename)
-
         # 2. Vector store injection (CPU embedding, ~1-3 seconds)
         inject_text_into_vector_store(parsed_text, filename, access_level)
 
@@ -224,13 +226,13 @@ def _run_ai_background(doc_id: int, parsed_text: str, filename: str, access_leve
         try:
             doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
             if doc:
-                doc.risk_level = audit_result["risk_level"]
-                doc.risk_description = audit_result["description"]
-                doc.department = metadata_result.get("department", "Unknown")
-                doc.doc_type = metadata_result.get("doc_type", "Unknown")
-                doc.summary = metadata_result.get("summary", "")
+                doc.risk_level = analysis_result["risk_level"]
+                doc.risk_description = analysis_result["description"]
+                doc.department = analysis_result.get("department", "Unknown")
+                doc.doc_type = analysis_result.get("doc_type", "Unknown")
+                doc.summary = analysis_result.get("summary", "")
                 db.commit()
-                print(f"[BG] AI scan done for '{filename}': {audit_result['risk_level']}")
+                print(f"[BG] AI scan done for '{filename}': {analysis_result['risk_level']}")
         finally:
             db.close()
     except Exception as e:
