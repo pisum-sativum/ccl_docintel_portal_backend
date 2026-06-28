@@ -28,7 +28,7 @@ def get_vector_db():
     if _vector_db is None:
         from langchain_community.vectorstores import Chroma
         _vector_db = Chroma(
-            persist_directory="./chroma_db",
+            persist_directory="./chroma_db_v2",
             embedding_function=get_embedding_engine()
         )
     return _vector_db
