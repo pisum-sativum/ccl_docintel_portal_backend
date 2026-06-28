@@ -11,6 +11,7 @@ load_dotenv()
 _embedding_engine = None
 _vector_db = None
 _llm = None
+_mistral_llm = None
 _text_splitter = None
 
 def get_embedding_engine():
@@ -51,17 +52,65 @@ def get_vector_db():
     return _vector_db
 
 def get_llm():
-    """Lazy-initialize the LLM — import AND instantiate only on first call.
-    This prevents blocking Uvicorn port binding on Render."""
+    """Lazy-initialize Gemini 2.5 Flash as primary LLM."""
     global _llm
     if _llm is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",  # Separate quota pool, ultra-fast, 1500 req/day free
+            model="gemini-2.5-flash",
             google_api_key=os.getenv("GEMINI_API_KEY", ""),
             temperature=0.2,
         )
     return _llm
+
+def get_mistral_llm():
+    """Lazy-initialize Mistral Small as fallback LLM (500M tokens/month free tier)."""
+    global _mistral_llm
+    if _mistral_llm is None:
+        from langchain_mistralai import ChatMistralAI
+        _mistral_llm = ChatMistralAI(
+            model="mistral-small-latest",
+            api_key=os.getenv("MISTRAL_API_KEY", ""),
+            temperature=0.2,
+        )
+    return _mistral_llm
+
+def invoke_llm(prompt: str) -> str:
+    """
+    Smart AI router: tries Gemini 2.5 Flash first.
+    If Gemini hits a 429 rate limit, automatically falls back to Mistral Small.
+    This ensures scanning always works even when Gemini quota is exhausted.
+    """
+    import time
+    # ── Try Gemini first (with 1 retry) ───────────────────────────────────
+    for attempt in range(2):
+        try:
+            response = get_llm().invoke(prompt)
+            return response.content
+        except Exception as e:
+            err_str = str(e)
+            is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str
+            if is_rate_limit:
+                if attempt == 0:
+                    print("[LLM] Gemini rate-limited, retrying in 10s...")
+                    time.sleep(10)
+                    continue
+                print("[LLM] Gemini quota exhausted after retry. Falling back to Mistral AI...")
+            else:
+                print(f"[LLM] Gemini error (non-rate-limit): {err_str[:200]}. Falling back to Mistral...")
+            break  # exit Gemini loop, try Mistral
+
+    # ── Fallback: Mistral AI ───────────────────────────────────────────────
+    mistral_key = os.getenv("MISTRAL_API_KEY", "")
+    if not mistral_key:
+        raise RuntimeError("Gemini quota exceeded and MISTRAL_API_KEY is not set on the server.")
+    try:
+        response = get_mistral_llm().invoke(prompt)
+        print("[LLM] Mistral fallback succeeded.")
+        return response.content
+    except Exception as e:
+        raise RuntimeError(f"Both Gemini and Mistral failed. Mistral error: {str(e)}")
+
 
 def get_text_splitter():
     """Lazy-initialize the text splitter to avoid importing langchain at module load."""
@@ -263,21 +312,11 @@ def query_document_intelligence(user_question: str, history: list[dict] = None, 
             f"User Question: {user_question}"
         )
 
-        # ── Step G: Invoke Gemini with automatic retries for rate limits ──
-        import time
-        max_attempts = 3  
-        for attempt in range(max_attempts):
-            try:
-                response = get_llm().invoke(system_instruction)
-                return response.content
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
-                    if attempt < max_attempts - 1:
-                        time.sleep(10)  
-                        continue
-                    return "⚠️ The AI service has temporarily reached its request limit. Please wait about a minute and try your question again."
-                return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {err_str}"
+        # ── Step G: Invoke AI (Gemini → Mistral fallback) ──────────────────
+        try:
+            return invoke_llm(system_instruction)
+        except RuntimeError as e:
+            return f"⚠️ {str(e)}"
                 
     except Exception as e:
         return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {str(e)}"
@@ -317,34 +356,19 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
             f"--- DOCUMENT TEXT ---\n{extracted_text[:1500]}"  # Limit to 1500 chars to minimize token usage
         )
 
-        import time
-        max_attempts = 3  
-        for attempt in range(max_attempts):
-            try:
-                response = get_llm().invoke(prompt)
-                break
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str:
-                    if attempt < max_attempts - 1:
-                        time.sleep(10) # 10s wait ensures we clear the 6s retryDelay from Google
-                        continue
-                    return {
-                        "risk_level": "Error", 
-                        "description": f"AI scan aborted due to Gemini API limits. Please wait a minute and retry. (Details: {err_str})",
-                        "department": "Unknown", 
-                        "doc_type": "Unknown", 
-                        "summary": "Scan failed (API limits)."
-                    }
-                return {
-                    "risk_level": "Error", 
-                    "description": f"Scanner failed: {err_str}",
-                    "department": "Unknown", 
-                    "doc_type": "Unknown", 
-                    "summary": "Extraction failed due to an error."
-                }
+        # ── Invoke AI (Gemini → Mistral fallback) ─────────────────────────────
+        try:
+            content = invoke_llm(prompt)
+        except RuntimeError as e:
+            return {
+                "risk_level": "Error",
+                "description": str(e),
+                "department": "Unknown",
+                "doc_type": "Unknown",
+                "summary": "Scan failed."
+            }
 
-        content = response.content.replace("*", "").replace("`", "")
+        content = content.replace("*", "").replace("`", "")
         
         result = {
             "risk_level": "None",
