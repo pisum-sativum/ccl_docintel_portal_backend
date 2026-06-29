@@ -1,14 +1,17 @@
 """
-Seeds the 'users' table with default admin and viewer accounts.
+Seeds the 'users' table with default admin, operator, and viewer accounts.
 Run once after migrate_users.py: python seed_users.py
 """
-from database import SessionLocal, User
+
 from auth import hash_password
+from database import SessionLocal, User
 
 SEED_USERS = [
-    {"username": "admin",  "password": "admin123",  "role": "admin"},
+    {"username": "admin", "password": "admin123", "role": "admin"},
+    {"username": "operator", "password": "operator123", "role": "operator"},
     {"username": "viewer", "password": "viewer123", "role": "viewer"},
 ]
+
 
 def seed():
     db = SessionLocal()
@@ -29,6 +32,7 @@ def seed():
     db.commit()
     db.close()
     print(f"\nSeeding complete. {created} new user(s) created.")
+
 
 if __name__ == "__main__":
     seed()

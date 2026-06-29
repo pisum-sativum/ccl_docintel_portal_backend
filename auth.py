@@ -2,42 +2,50 @@
 JWT Authentication Engine for CCL DocIntel.
 Provides token creation, verification, and FastAPI dependency injectors.
 """
+
 import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 # ── Secrets & Config ────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "ccl-docintel-super-secret-key-change-in-prod")
-ALGORITHM  = "HS256"
+ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 8
 
 # ── Password Hashing ─────────────────────────────────────────────────────────
 # Using sha256_crypt for full compatibility with Anaconda's bcrypt environment
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
+
 def hash_password(plain: str) -> str:
     return pwd_context.hash(plain)
+
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
+
 # ── JWT Token Creation ───────────────────────────────────────────────────────
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
 
 # ── FastAPI OAuth2 Scheme (reads Bearer token from Authorization header) ─────
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 from fastapi import Request
+
 
 def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     """
@@ -66,6 +74,7 @@ def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+
 def require_admin(current_user: dict = Depends(get_current_user)):
     """
     Dependency that additionally requires the user to have the 'admin' role.
@@ -75,5 +84,19 @@ def require_admin(current_user: dict = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. This action requires Administrator privileges.",
+        )
+    return current_user
+
+
+def require_admin_or_operator(current_user: dict = Depends(get_current_user)):
+    """
+    Allows Administrator and Operator roles.
+    Used for ingestion actions: operators can upload and trigger scans,
+    but destructive/modification endpoints remain admin-only.
+    """
+    if current_user.get("role") not in {"admin", "operator"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Upload requires Administrator or Operator privileges.",
         )
     return current_user

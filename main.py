@@ -10,7 +10,13 @@ import re
 import threading
 from contextlib import asynccontextmanager
 
-from auth import create_access_token, get_current_user, require_admin, verify_password
+from auth import (
+    create_access_token,
+    get_current_user,
+    require_admin,
+    require_admin_or_operator,
+    verify_password,
+)
 from database import DocumentMetadata, SessionLocal, User, get_db, init_db
 
 # Import custom application modules
@@ -431,7 +437,7 @@ async def upload_document(
     force: bool = Form(False),
     access_level: str = Form("Internal"),
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin),  # 🔒 ADMIN ONLY
+    _user: dict = Depends(require_admin_or_operator),  # 🔒 ADMIN + OPERATOR
 ):
     try:
         content = await file.read()
