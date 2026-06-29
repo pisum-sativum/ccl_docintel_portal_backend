@@ -92,12 +92,10 @@ def get_mistral_llm():
 def invoke_llm(prompt: str) -> str:
     """
     Smart AI router: tries Gemini 2.5 Flash first.
-    If Gemini hits a 429 rate limit, automatically falls back to Mistral Small.
-    This ensures scanning always works even when Gemini quota is exhausted.
+    On rate-limit (429), falls back to Mistral immediately — no sleep.
+    On other transient errors, retries Gemini once before falling back.
     """
-    import time
-
-    # ── Try Gemini first (with 1 retry) ───────────────────────────────────
+    # ── Try Gemini (rate-limit → instant fallback; other errors → 1 retry) ──
     for attempt in range(2):
         try:
             response = get_llm().invoke(prompt)
@@ -108,20 +106,25 @@ def invoke_llm(prompt: str) -> str:
                 "429" in err_str
                 or "RESOURCE_EXHAUSTED" in err_str
                 or "Quota exceeded" in err_str
+                or "quota" in err_str.lower()
             )
             if is_rate_limit:
-                if attempt == 0:
-                    print("[LLM] Gemini rate-limited, retrying in 10s...")
-                    time.sleep(10)
-                    continue
+                # Quota won't clear in seconds — skip the pointless retry and
+                # fall back to Mistral immediately instead of sleeping 10 s.
                 print(
-                    "[LLM] Gemini quota exhausted after retry. Falling back to Mistral AI..."
+                    "[LLM] Gemini quota exhausted. Falling back to Mistral immediately."
                 )
-            else:
+                break
+            # Transient error: one immediate retry on first attempt only
+            if attempt == 0:
                 print(
-                    f"[LLM] Gemini error (non-rate-limit): {err_str[:200]}. Falling back to Mistral..."
+                    f"[LLM] Gemini transient error: {err_str[:100]}. Retrying once..."
                 )
-            break  # exit Gemini loop, try Mistral
+                continue
+            print(
+                f"[LLM] Gemini failed twice: {err_str[:100]}. Falling back to Mistral..."
+            )
+            break
 
     # ── Fallback: Mistral AI ───────────────────────────────────────────────
     mistral_key = os.getenv("MISTRAL_API_KEY", "")
@@ -160,13 +163,31 @@ def warm_up():
 def delete_document_from_vector_store(filename: str):
     """
     Removes all vector chunks for a given filename from PGVector.
+
+    NOTE: langchain-postgres PGVector.delete(ids=None, filter=...) is a silent
+    no-op when ids=None — the filter kwarg is completely ignored by the library.
+    We use a direct SQL DELETE on the underlying tables instead.
     """
     try:
-        vdb = get_vector_db()
-        vdb.delete(ids=None, filter={"source": filename})
-        print(f"[DEDUP] Removed stale chunks for '{filename}'")
+        from database import engine as db_engine
+        from sqlalchemy import text as sql_text
+
+        with db_engine.connect() as conn:
+            result = conn.execute(
+                sql_text(
+                    "DELETE FROM langchain_pg_embedding "
+                    "WHERE collection_id = ("
+                    "  SELECT uuid FROM langchain_pg_collection "
+                    "  WHERE name = 'ccl_docintel_vectors'"
+                    ") "
+                    "AND cmetadata->>'source' = :filename"
+                ),
+                {"filename": filename},
+            )
+            conn.commit()
+            print(f"[DEDUP] Deleted {result.rowcount} vector chunk(s) for '{filename}'")
     except Exception as del_err:
-        print(f"[DEDUP WARN] Could not remove old chunks: {del_err}")
+        print(f"[DEDUP WARN] Could not remove old chunks for '{filename}': {del_err}")
 
 
 def inject_text_into_vector_store(
@@ -358,10 +379,33 @@ def query_document_intelligence(
         return f"⚠️ We encountered a temporary issue connecting to the AI engine. ERROR: {str(e)}"
 
 
+# Keywords that unambiguously flag a security-sensitive file by name alone
+_SECURITY_FILENAME_KEYWORDS = {
+    "security_issue",
+    "hack",
+    "exploit",
+    "malware",
+    "vulnerability",
+    "attack",
+    "password",
+    "passwd",
+    "credential",
+    "secret",
+    "token",
+    "backdoor",
+    "rootkit",
+    "payload",
+    "injection",
+    "phish",
+    "ransomware",
+}
+
+
 def analyze_document(extracted_text: str, filename: str) -> dict:
     """
-    Combines compliance scanning and metadata extraction into a single Gemini LLM call.
-    This cuts latency in half and prevents API rate limit exhaustion.
+    Combines compliance scanning and metadata extraction into a single LLM call.
+    Fast-path: filenames containing security keywords are flagged immediately
+    without an LLM call, ensuring nothing slips through on a bad API response.
     """
     if not extracted_text:
         return {
@@ -372,24 +416,53 @@ def analyze_document(extracted_text: str, filename: str) -> dict:
             "summary": "No text extracted.",
         }
 
+    # ── Fast-path: flag by filename before even calling the LLM ───────────────
+    fname_normalized = filename.lower().replace("-", "_").replace(" ", "_")
+    fname_stem = fname_normalized.rsplit(".", 1)[0]  # strip extension
+    hit = next((kw for kw in _SECURITY_FILENAME_KEYWORDS if kw in fname_stem), None)
+    if hit:
+        print(
+            f"[SCAN] Filename '{filename}' matched keyword '{hit}' — auto-flagging High."
+        )
+        return {
+            "risk_level": "High",
+            "description": f"Filename '{filename}' contains security-sensitive keyword '{hit}'.",
+            "department": "Security",
+            "doc_type": "Security Report",
+            "summary": f"Auto-flagged: filename indicates a potential security issue (keyword: '{hit}').",
+        }
+
     try:
+        # Sample the first 3000 chars + a 500-char window from the middle so
+        # credentials buried past the first page are still visible to the AI.
+        mid = len(extracted_text) // 2
+        text_sample = extracted_text[:3000]
+        if len(extracted_text) > 3500:
+            text_sample += (
+                "\n[...middle excerpt...]\n" + extracted_text[mid : mid + 500]
+            )
+
         prompt = (
-            f"You are a strict cybersecurity and document analysis AI agent. Review the following text "
-            f"and its filename ('{filename}') for extreme operational hazards, critical safety violations, "
-            f"exposed credentials, and security risks. Perform both a compliance scan and metadata extraction.\n\n"
-            f"**COMPLIANCE SCAN INSTRUCTIONS:**\n"
-            f"Be lenient on normal business files! Do NOT flag minor administrative issues, normal guidelines, or benign text as High/Medium risk.\n"
-            f"HOWEVER, if the document contains passwords, hacking instructions, malicious payloads, or if its filename indicates it is a security issue, "
-            f"you MUST mark it as 'High' risk.\n\n"
-            f"**METADATA INSTRUCTIONS:**\n"
-            f"Extract the Department (HR, Legal, IT, etc), Type (Form, Policy, Memo, etc), and a concise 1-2 sentence Summary.\n\n"
-            f"Respond ONLY in this EXACT format (do not add markdown blocks):\n"
+            f"You are a strict cybersecurity and compliance AI. Analyse the document "
+            f"filename '{filename}' and the text below.\n\n"
+            f"RISK CLASSIFICATION RULES (apply strictly — do NOT be lenient for High/Medium):\n"
+            f"  HIGH: passwords/keys/tokens/secrets, hacking or exploit instructions, "
+            f"malware/payload/shellcode, SQL injection, destructive shell commands, "
+            f"filenames containing 'hack/exploit/malware/vulnerability/attack/password/"
+            f"credential/secret/token/backdoor'.\n"
+            f"  MEDIUM: unencrypted sensitive PII (SSN, card numbers), unapproved "
+            f"data-exfiltration references, clear policy violations.\n"
+            f"  NONE: normal business documents, policies, forms, reports, guidelines.\n\n"
+            f"METADATA:\n"
+            f"  Extract Department (HR/Legal/IT/etc), Type (Form/Policy/Memo/etc), "
+            f"and a concise 1-2 sentence Summary.\n\n"
+            f"Reply ONLY in this exact format (no markdown, no extra lines):\n"
             f"RISK: [High, Medium, or None]\n"
-            f"REASON: [A short 1-sentence description of the hazard, or 'All clear']\n"
+            f"REASON: [one sentence — be specific about what was found, or 'All clear']\n"
             f"DEPARTMENT: [department]\n"
             f"TYPE: [type]\n"
             f"SUMMARY: [summary]\n\n"
-            f"--- DOCUMENT TEXT ---\n{extracted_text[:1500]}"  # Limit to 1500 chars to minimize token usage
+            f"--- DOCUMENT TEXT ---\n{text_sample}"
         )
 
         # ── Invoke AI (Gemini → Mistral fallback) ─────────────────────────────
