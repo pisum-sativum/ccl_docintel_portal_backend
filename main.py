@@ -106,8 +106,13 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     """Validates credentials and returns a signed JWT token."""
-    user = db.query(User).filter(User.username == payload.username).first()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    username = payload.username.strip().lower()
+    # Friendly alias: many users type "view" when they mean the viewer account.
+    if username == "view":
+        username = "viewer"
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not verify_password(payload.password.strip(), user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     if not user.is_active:
         raise HTTPException(
