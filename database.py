@@ -13,7 +13,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import deferred, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 # Load key-value properties out of our secured .env file
 load_dotenv()
@@ -47,9 +47,7 @@ class DocumentMetadata(Base):
     filename = Column(String, unique=True, index=True)
     content_type = Column(String)
     char_count = Column(Integer)
-    extracted_text = deferred(
-        Column(Text, nullable=True)
-    )  # lazy-loaded: not fetched in list queries
+    extracted_text = Column(Text, nullable=True)
     upload_date = Column(DateTime, default=datetime.datetime.utcnow)
     risk_level = Column(String, default="None")
     risk_description = Column(String, default="Pending scan.")
@@ -58,9 +56,7 @@ class DocumentMetadata(Base):
     department = Column(String, nullable=True)
     doc_type = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
-    raw_file_data = deferred(
-        Column(LargeBinary, nullable=True)
-    )  # lazy-loaded: binary never fetched unless explicitly accessed
+    raw_file_data = Column(LargeBinary, nullable=True)
 
 
 class User(Base):

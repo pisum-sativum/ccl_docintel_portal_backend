@@ -34,7 +34,7 @@ from rag_engine import (
     query_document_intelligence,
 )
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 
 @asynccontextmanager
@@ -203,6 +203,14 @@ def get_compliance_alerts(db: Session = Depends(get_db)):
     try:
         flagged_docs = (
             db.query(DocumentMetadata)
+            .options(
+                load_only(
+                    DocumentMetadata.id,
+                    DocumentMetadata.filename,
+                    DocumentMetadata.risk_level,
+                    DocumentMetadata.risk_description,
+                )
+            )
             .filter(DocumentMetadata.risk_level.in_(["High", "Medium"]))
             .order_by(DocumentMetadata.upload_date.desc())
             .all()
@@ -247,7 +255,22 @@ def list_uploaded_documents(
     Physical files are lost on every restart, but extracted_text lives in the cloud
     PostgreSQL DB and must be preserved. Delete via the DELETE endpoint instead.
     """
-    base_query = db.query(DocumentMetadata)
+    # Use load_only to exclude the large blob columns (raw_file_data, extracted_text)
+    # from the list query — they are not needed for the document cards.
+    _list_cols = load_only(
+        DocumentMetadata.id,
+        DocumentMetadata.filename,
+        DocumentMetadata.content_type,
+        DocumentMetadata.char_count,
+        DocumentMetadata.upload_date,
+        DocumentMetadata.access_level,
+        DocumentMetadata.department,
+        DocumentMetadata.doc_type,
+        DocumentMetadata.summary,
+        DocumentMetadata.risk_level,
+        DocumentMetadata.risk_description,
+    )
+    base_query = db.query(DocumentMetadata).options(_list_cols)
     if current_user["role"] != "admin":
         base_query = base_query.filter(
             DocumentMetadata.access_level.in_(["Public", "Internal"])
@@ -466,7 +489,9 @@ async def upload_document(
         )
         db.add(db_record)
         db.commit()
-        db.refresh(db_record)
+        # No db.refresh() needed — SQLAlchemy populates db_record.id during flush.
+        # Calling refresh() with large LargeBinary columns would read the full
+        # file back from PostgreSQL into RAM unnecessarily.
 
         # ── 6. Offload ALL slow work (text extraction + AI) to background thread ──
         background_tasks.add_task(
@@ -634,7 +659,19 @@ def import_missing_files(
     db: Session = Depends(get_db),
     _admin: dict = Depends(require_admin),
 ):
-    existing_docs = db.query(DocumentMetadata).all()
+    # Only load the columns we actually need — skip blob columns
+    existing_docs = (
+        db.query(DocumentMetadata)
+        .options(
+            load_only(
+                DocumentMetadata.id,
+                DocumentMetadata.filename,
+                DocumentMetadata.risk_description,
+                DocumentMetadata.access_level,
+            )
+        )
+        .all()
+    )
     existing_filenames = {d.filename for d in existing_docs}
 
     try:
