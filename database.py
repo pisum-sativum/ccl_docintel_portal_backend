@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 # Load key-value properties out of our secured .env file
 load_dotenv()
@@ -28,14 +29,18 @@ connect_args = (
     if DATABASE_URL.startswith("postgres")
     else {"check_same_thread": False}
 )
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=connect_args,
-    pool_pre_ping=True,  # detect stale connections automatically
-    pool_size=3,  # limit concurrent DB connections on Render free tier
-    max_overflow=2,  # allow up to 2 extra connections under burst load
-    pool_recycle=300,  # recycle connections every 5 min to avoid Neon timeouts
-)
+# NullPool: every session.close() immediately terminates the underlying
+# TCP connection instead of returning it to a pool.  This prevents the
+# "QueuePool limit reached" error on Neon + Render free tier, where
+# request handlers + background scan threads + vector injection threads
+# all compete for a small fixed set of pool slots simultaneously.
+# Neon's own pgBouncer handles connection multiplexing on the DB side,
+# so we don't need SQLAlchemy's pool at all.
+_pool_cls = NullPool if DATABASE_URL.startswith("postgres") else None
+_engine_kwargs = {"connect_args": connect_args, "pool_pre_ping": True}
+if _pool_cls:
+    _engine_kwargs["poolclass"] = _pool_cls
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

@@ -57,6 +57,9 @@ def get_vector_db():
             collection_name="ccl_docintel_vectors",
             connection=connection_string,
             use_jsonb=True,
+            # Keep PGVector's own pool tiny so it doesn't compete with the
+            # app's NullPool sessions for Neon's connection limit.
+            engine_args={"pool_size": 1, "max_overflow": 0, "pool_recycle": 300},
         )
     return _vector_db
 
