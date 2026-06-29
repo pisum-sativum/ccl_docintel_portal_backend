@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from auth import (
     create_access_token,
     get_current_user,
+    hash_password,
     require_admin,
     require_admin_or_operator,
     verify_password,
@@ -117,8 +118,32 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if username == "view":
         username = "viewer"
 
+    password = payload.password.strip()
+    default_users = {
+        "admin": {"password": "admin123", "role": "admin"},
+        "operator": {"password": "operator123", "role": "operator"},
+        "viewer": {"password": "viewer123", "role": "viewer"},
+    }
+
     user = db.query(User).filter(User.username == username).first()
-    if not user or not verify_password(payload.password.strip(), user.hashed_password):
+    if (
+        not user
+        and username in default_users
+        and password == default_users[username]["password"]
+    ):
+        # Production databases created before a new role was added may not have
+        # the seed row. Create it lazily on first valid default login.
+        user = User(
+            username=username,
+            hashed_password=hash_password(password),
+            role=default_users[username]["role"],
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     if not user.is_active:
         raise HTTPException(
